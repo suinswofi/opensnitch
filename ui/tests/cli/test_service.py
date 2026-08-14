@@ -71,7 +71,19 @@ class TestSubscribe:
         assert len(db.nodes()) == 1
 
     def test_overrides_the_default_action(self, db, config):
-        """what the daemon does while we're busy answering another connection."""
+        """what the daemon does while we're busy answering another connection.
+
+        Denying by default here matters as much as denying an unreviewed
+        connection: without it a burst of new connections partly gets through
+        while we're answering the first one.
+        """
+        service = make_service(db, config)
+        reply = service.Subscribe(client_config(default_action="allow"), FakeContext())
+
+        assert json.loads(reply.config)["DefaultAction"] == "deny"
+
+    def test_the_default_action_follows_the_configuration(self, db, config):
+        config._parser.set("policy", "default_action", "allow")
         service = make_service(db, config)
         reply = service.Subscribe(client_config(default_action="deny"), FakeContext())
 
@@ -104,7 +116,7 @@ class TestAskRule:
         rule = service.AskRule(connection, FakeContext())
 
         assert rule is not None
-        assert rule.action == "allow"
+        assert rule.action == "deny"
         assert db.pending_count() == 1
 
     def test_answers_quickly(self, db, config, connection):
@@ -116,10 +128,10 @@ class TestAskRule:
         service.AskRule(connection, FakeContext())
         assert time.time() - start < 1.0
 
-    def test_deny_policy(self, db, config, connection):
-        config._parser.set("policy", "unreviewed_action", "deny")
+    def test_allow_policy(self, db, config, connection):
+        config._parser.set("policy", "unreviewed_action", "allow")
         service = make_service(db, config)
-        assert service.AskRule(connection, FakeContext()).action == "deny"
+        assert service.AskRule(connection, FakeContext()).action == "allow"
 
 
 def open_replies(stop):

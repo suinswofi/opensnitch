@@ -47,9 +47,9 @@ DEFAULTS = {
         "max_message_length": "4194304",
     },
     "policy": {
-        "unreviewed_action": "allow",
+        "unreviewed_action": "deny",
         "unreviewed_duration": "1h",
-        "default_action": "allow",
+        "default_action": "deny",
         "queue_max": "1000",
     },
     "db": {

@@ -32,6 +32,7 @@ import grpc
 from google.protobuf import json_format
 
 from opensnitch import auth
+from opensnitch.rule_consts import RuleConsts
 from opensnitch.cli.proto import ui_pb2, ui_pb2_grpc
 from opensnitch.cli import db as dbmod
 from opensnitch.cli.policy import Policy
@@ -143,9 +144,12 @@ class Server:
         logger.info("listening on %s (auth: %s)", address, auth_type)
         logger.info("connections nobody has reviewed yet: %s for %s",
                     self._policy.action, self._policy.duration)
-        if self._policy.action == "allow":
-            logger.warning("unreviewed connections are ALLOWED. Set policy.unreviewed_action "
-                           "to deny if this machine should block them instead")
+        if self._policy.action == RuleConsts.ACTION_ALLOW:
+            logger.warning("unreviewed connections are ALLOWED until you review them. "
+                           "Set policy.unreviewed_action to deny to block them instead")
+        else:
+            logger.info("unreviewed connections are blocked. Run 'opensnitch-cli review' "
+                        "to go through them")
         return port
 
     def _start_thread(self, target, name):

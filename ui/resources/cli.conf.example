@@ -30,22 +30,37 @@ max_message_length = 4194304
 [policy]
 # What to answer for a connection nobody has reviewed yet: allow, deny or reject.
 #
-# The default is allow, so a server keeps working while the queue waits for you.
-# The connection is still recorded for review, and the decision you take governs
-# every later connection. Set this to deny if this machine should block anything
-# that has not been approved.
-unreviewed_action = allow
+# The default is deny: nothing this machine has not been approved to do gets
+# out. The connection is still recorded, and 'opensnitch-cli review' is how you
+# approve it; the decision you take governs every later connection.
+#
+# Set this to allow if you would rather the server keep working while the queue
+# waits for you. That is the weaker setting, but it never breaks a service you
+# forgot to approve, and the connection is still queued either way.
+#
+# reject behaves like deny but answers the connection instead of dropping it,
+# so the program fails immediately rather than hanging until it times out.
+unreviewed_action = deny
 
 # How long that answer lasts before the connection is asked about again.
 # Long enough not to ask about every packet, short enough that a connection you
-# never review comes back rather than being allowed for good.
+# never review comes back rather than being decided for good.
 # Days and weeks are not accepted: the daemon parses this with Go's
 # time.ParseDuration, which only knows ns, us, ms, s, m and h.
 unreviewed_duration = 1h
 
-# What the daemon should do while it is waiting for an answer to another
-# connection, or if this program stops responding. allow or deny.
-default_action = allow
+# What the daemon should do on its own, without asking: while it is already
+# waiting for an answer about another connection, or if this program stops
+# responding. allow or deny.
+#
+# Keep this the same as unreviewed_action. Leaving it on allow while
+# unreviewed_action is deny means a burst of new connections partly gets
+# through, which defeats the point of denying them one at a time.
+#
+# This is pushed to the daemon when it connects and is not written to its
+# configuration file, so it only applies while opensnitch-cli is running. With
+# nothing connected the daemon falls back to its own DefaultAction.
+default_action = deny
 
 # Stop recording new connections past this many unreviewed entries. Connections
 # are still answered, they just stop being added to the queue; opensnitch-cli

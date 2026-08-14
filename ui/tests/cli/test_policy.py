@@ -83,7 +83,26 @@ class TestPolicy:
         rule = p.on_ask("unix:/local", connection)
 
         assert rule is not None
+        assert db.pending_count() == 1
+
+    def test_unreviewed_connections_are_denied_by_default(self, db, config, connection):
+        """nothing gets out until it has been approved.
+
+        This is the setting that decides whether the machine is fail-closed, so
+        pin the default rather than leaving it to the configuration file.
+        """
+        assert config.get("policy", "unreviewed_action") == "deny"
+
+        p = policy.Policy(db, config)
+        assert p.on_ask("unix:/local", connection).action == "deny"
+
+    def test_can_be_made_fail_open(self, db, config, connection):
+        config._parser.set("policy", "unreviewed_action", "allow")
+        p = policy.Policy(db, config)
+
+        rule = p.on_ask("unix:/local", connection)
         assert rule.action == "allow"
+        # still queued: allowing it for now is not the same as approving it
         assert db.pending_count() == 1
 
     def test_repeats_count_instead_of_duplicating(self, db, config, connection):
