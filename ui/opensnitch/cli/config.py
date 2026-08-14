@@ -156,5 +156,10 @@ class Config:
             raise ConfigError("{0}.{1}: '{2}' is not a boolean".format(
                 section, option, self.get(section, option)))
 
+    def set(self, section, option, value):
+        """override a setting from the command line."""
+        self._parser.set(section, option, str(value))
+        self._validate()
+
     def db_path(self):
         return os.path.expanduser(self.get("db", "path"))

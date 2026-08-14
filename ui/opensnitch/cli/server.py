@@ -41,6 +41,7 @@ from opensnitch.cli.service import Service
 logger = logging.getLogger(__name__)
 
 OUTBOX_INTERVAL = 1.0
+LAST_SEEN_INTERVAL = 30.0
 PURGE_INTERVAL = 3600.0
 
 
@@ -223,9 +224,13 @@ class Server:
     def _housekeeping_loop(self):
         retention = self._config.getint("db", "retention_days")
         last_purge = 0
+        last_seen = 0
         while not self._exit.is_set():
             try:
                 self._db.expire_provisionals()
+                if time.time() - last_seen > LAST_SEEN_INTERVAL:
+                    self._service.persist_last_seen(self._db)
+                    last_seen = time.time()
                 if time.time() - last_purge > PURGE_INTERVAL:
                     removed = self._db.purge(retention)
                     if removed:

@@ -97,7 +97,7 @@ class TestPolicy:
         assert p.on_ask("unix:/local", connection).action == "deny"
 
     def test_can_be_made_fail_open(self, db, config, connection):
-        config._parser.set("policy", "unreviewed_action", "allow")
+        config.set("policy", "unreviewed_action", "allow")
         p = policy.Policy(db, config)
 
         rule = p.on_ask("unix:/local", connection)
@@ -122,7 +122,7 @@ class TestPolicy:
         assert entry["provisional_expires"] is not None
 
     def test_full_queue_still_answers(self, db, config, connection):
-        config._parser.set("policy", "queue_max", "1")
+        config.set("policy", "queue_max", "1")
         p = policy.Policy(db, config)
         p.on_ask("unix:/local", connection)
 

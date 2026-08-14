@@ -5,9 +5,6 @@
 # here by ones that do nothing: pytest resolves fixtures from the closest
 # conftest, so the GUI tests keep using the originals.
 
-import os
-import tempfile
-
 import pytest
 
 from opensnitch.cli.config import Config

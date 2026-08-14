@@ -62,8 +62,6 @@ class Service(ui_pb2_grpc.UIServicer):
         self._nodes = {}
         self._lock = threading.RLock()
         self._exit = threading.Event()
-        # notification id -> outbox row, filled in by the outbox thread
-        self._sent = {}
 
     # node bookkeeping
 
@@ -85,6 +83,17 @@ class Service(ui_pb2_grpc.UIServicer):
     def nodes(self):
         with self._lock:
             return list(self._nodes.values())
+
+    def persist_last_seen(self, db):
+        """writes when each node was last heard from.
+
+        Ping arrives once a second per node, so it only updates the value in
+        memory; this is called from the housekeeping thread now and then.
+        """
+        for node in self.nodes():
+            if node.stop.is_set():
+                continue
+            db.node_seen(node.addr, node.hostname, node.version, online=True)
 
     def shutdown(self):
         """asks every daemon to close its notifications stream."""

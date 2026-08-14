@@ -24,7 +24,6 @@ works on a machine where the service half isn't installed.
 import argparse
 import json
 import logging
-import os
 import sys
 
 from opensnitch.version import version
@@ -56,7 +55,7 @@ def cmd_serve(args, config):
     from opensnitch.cli.server import Server
 
     if args.socket is not None:
-        config._parser.set("server", "address", args.socket)
+        config.set("server", "address", args.socket)
 
     server = Server(config)
     try:
@@ -117,7 +116,7 @@ def cmd_review(args, config):
 
 def cmd_decide(args, config):
     """allow / deny / reject without the interactive loop."""
-    from opensnitch.cli import review, rules
+    from opensnitch.cli import review
 
     db = open_db(config)
     entry = db.get_pending(args.id)
@@ -296,7 +295,7 @@ def main(argv=None):
         return 2
 
     if args.db is not None:
-        config._parser.set("db", "path", args.db)
+        config.set("db", "path", args.db)
 
     setup_logging(config, args.log_level)
 

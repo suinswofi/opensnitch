@@ -83,7 +83,7 @@ class TestSubscribe:
         assert json.loads(reply.config)["DefaultAction"] == "deny"
 
     def test_the_default_action_follows_the_configuration(self, db, config):
-        config._parser.set("policy", "default_action", "allow")
+        config.set("policy", "default_action", "allow")
         service = make_service(db, config)
         reply = service.Subscribe(client_config(default_action="deny"), FakeContext())
 
@@ -129,7 +129,7 @@ class TestAskRule:
         assert time.time() - start < 1.0
 
     def test_allow_policy(self, db, config, connection):
-        config._parser.set("policy", "unreviewed_action", "allow")
+        config.set("policy", "unreviewed_action", "allow")
         service = make_service(db, config)
         assert service.AskRule(connection, FakeContext()).action == "allow"
 

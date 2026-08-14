@@ -10,6 +10,14 @@ from opensnitch.operands import (
     APPIMAGE_PREFIX, SNAP_PREFIX
 )
 
+# re-exported, so that the rest of the pop-up keeps using constants.FIELD_*
+__all__ = [
+    "FIELD_REGEX_HOST", "FIELD_REGEX_IP", "FIELD_PROC_PATH", "FIELD_PROC_ARGS",
+    "FIELD_PROC_ID", "FIELD_USER_ID", "FIELD_DST_IP", "FIELD_DST_PORT",
+    "FIELD_DST_NETWORK", "FIELD_DST_HOST", "FIELD_APPIMAGE", "FIELD_SNAP",
+    "APPIMAGE_PREFIX", "SNAP_PREFIX",
+]
+
 PAGE_MAIN = 2
 PAGE_DETAILS = 0
 PAGE_CHECKSUMS = 1
