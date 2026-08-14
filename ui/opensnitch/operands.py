@@ -238,6 +238,12 @@ def candidates(con):
     if len(con.process_args) > 0 and con.process_args[0] != "":
         add("this command line", from_process_command(con.process_args, con.process_path))
 
+    checksums = dict(getattr(con, "process_checksums", None) or {})
+    md5 = checksums.get(RuleConsts.OPERAND_PROCESS_HASH_MD5)
+    if md5:
+        add("this exact binary, by checksum",
+            (RuleConsts.RULE_TYPE_SIMPLE, RuleConsts.OPERAND_PROCESS_HASH_MD5, md5))
+
     if con.dst_host != "" and con.dst_host != con.dst_ip:
         add("this host", from_dest_host(con.dst_host))
         for domain in dest_host_wildcards(con.dst_host):

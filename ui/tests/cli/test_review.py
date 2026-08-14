@@ -4,7 +4,8 @@
 
 import json
 
-from opensnitch.cli import db as dbmod, review
+from opensnitch import operands
+from opensnitch.cli import review
 from opensnitch.cli.proto import ui_pb2
 
 
@@ -170,6 +171,80 @@ class TestEditing:
 
         assert any("RE2" in line for line in written)
         assert sent_rules(db) == []
+
+
+class TestUntrustedCommandLine:
+    """a program chooses its own argv[0], so matching on it alone is spoofable.
+
+    The pop-up pins the executable too in that case (dialogs/prompt/dialog.py);
+    the terminal client has to behave the same or its rules are weaker.
+    """
+
+    def _decide_on_command_line(self, db, config, con):
+        db.record_pending("unix:/local", "sig", con, {})
+        review.review_loop(db, db.pending(), config,
+                           read=scripted(["e", "1", "2", "a"]), write=silent)
+        return sent_rules(db)[-1][1]
+
+    def test_relative_argv0_also_pins_the_executable(self, db, config):
+        con = ui_pb2.Connection(protocol="tcp", dst_ip="1.2.3.4", dst_port=443,
+                                process_path="/usr/bin/curl",
+                                process_args=["curl", "https://example.com"])
+        rule = self._decide_on_command_line(db, config, con)
+
+        assert rule["operator"]["type"] == "list"
+        operands_used = [(o["operand"], o["data"]) for o in rule["operator"]["list"]]
+        assert ("process.path", "/usr/bin/curl") in operands_used
+        assert any(o == "process.command" for o, _ in operands_used)
+
+    def test_proc_self_fd_also_pins_the_executable(self, db, config):
+        con = ui_pb2.Connection(protocol="tcp", dst_ip="1.2.3.4", dst_port=443,
+                                process_path="/usr/bin/python3",
+                                process_args=["/proc/self/fd/3", "script.py"])
+        rule = self._decide_on_command_line(db, config, con)
+
+        assert rule["operator"]["type"] == "list"
+        operands_used = [o["operand"] for o in rule["operator"]["list"]]
+        assert "process.path" in operands_used
+
+    def test_an_absolute_command_line_is_left_alone(self, db, config, connection):
+        rule = self._decide_on_command_line(db, config, connection)
+
+        # /usr/bin/curl -sSL ... is trustworthy on its own
+        assert rule["operator"]["type"] == "simple"
+        assert rule["operator"]["operand"] == "process.command"
+
+    def test_the_user_is_told_why(self, db, config):
+        con = ui_pb2.Connection(protocol="tcp", dst_ip="1.2.3.4", dst_port=443,
+                                process_path="/usr/bin/curl",
+                                process_args=["curl", "https://example.com"])
+        db.record_pending("unix:/local", "sig", con, {})
+        written = []
+        review.review_loop(db, db.pending(), config,
+                           read=scripted(["e", "1", "2", "a"]), write=written.append)
+
+        assert any("could be fooled" in line for line in written)
+
+
+class TestChecksum:
+
+    def test_the_binary_checksum_can_be_matched_on(self, db, config, connection):
+        connection.process_checksums["process.hash.md5"] = "d41d8cd98f00b204e9800998ecf8427e"
+        db.record_pending("unix:/local", "sig", connection, {})
+
+        entry = db.pending()[0]
+        con = review.entry_connection(entry)
+        candidates = [c for c in operands.candidates(con)
+                      if c["operand"] == "process.hash.md5"]
+
+        assert len(candidates) == 1
+        assert candidates[0]["data"] == "d41d8cd98f00b204e9800998ecf8427e"
+
+    def test_not_offered_when_the_daemon_did_not_send_one(self, db, config, connection):
+        con = review.entry_connection(
+            db.get_pending(db.record_pending("unix:/local", "s", connection, {})[0]))
+        assert [c for c in operands.candidates(con)
+                if c["operand"] == "process.hash.md5"] == []
 
 
 class TestRendering:

@@ -22,6 +22,7 @@ print() directly, so that the whole loop can be driven by a test.
 """
 
 import json
+import os
 import time
 
 from opensnitch import operands
@@ -96,6 +97,23 @@ class Decision:
         self.selected = self.candidates[0] if len(self.candidates) > 0 else None
         self.extra = []
 
+    def untrusted_command(self):
+        """whether matching on the command line alone could be fooled.
+
+        A program chooses its own argv[0], so a command line that doesn't start
+        with an absolute path, or that starts under /proc (/proc/self/fd/...),
+        says nothing about which binary is really running. The pop-up pins the
+        executable as well in that case, and so do we.
+        """
+        if self.selected is None:
+            return False
+        if self.selected["operand"] != RuleConsts.OPERAND_PROCESS_COMMAND:
+            return False
+        argv = " ".join(self.con.process_args).split(" ")
+        if len(argv) == 0 or argv[0] == "":
+            return True
+        return not os.path.isabs(argv[0]) or argv[0].startswith("/proc")
+
     def operators(self):
         ops = []
         if self.selected is not None:
@@ -103,6 +121,13 @@ class Decision:
                                           self.selected["data"]))
         for cand in self.extra:
             ops.append(rules.new_operator(cand["type"], cand["operand"], cand["data"]))
+
+        if self.untrusted_command() and self.con.process_path != "":
+            already = [o for o in ops if o.operand == RuleConsts.OPERAND_PROCESS_PATH]
+            if len(already) == 0:
+                ops.append(rules.new_operator(RuleConsts.RULE_TYPE_SIMPLE,
+                                              RuleConsts.OPERAND_PROCESS_PATH,
+                                              self.con.process_path))
         return ops
 
     @property
@@ -135,6 +160,9 @@ class Decision:
 
     def warnings(self):
         found = []
+        if self.untrusted_command():
+            found.append("a program picks its own command line, so the executable is "
+                         "matched as well, otherwise this rule could be fooled")
         for op in self.operators():
             warning = rules.case_warning(op)
             if warning is not None:
@@ -274,13 +302,10 @@ def apply_decision(db, entry, rule):
 
     db.queue_notification(entry["node"], ui_pb2.CHANGE_RULE,
                           json_format.MessageToJson(rule), pending_id=entry["id"])
-    db.set_pending_state(entry["id"], db_state_decided(), json_format.MessageToJson(rule))
-
-
-def db_state_decided():
     from opensnitch.cli import db as dbmod
 
-    return dbmod.STATE_DECIDED
+    db.set_pending_state(entry["id"], dbmod.STATE_DECIDED,
+                         json_format.MessageToJson(rule))
 
 
 def review_loop(db, entries, config, read=input, write=print):
@@ -333,10 +358,17 @@ def review_loop(db, entries, config, read=input, write=print):
                 write("  the daemon would refuse this rule: %s" % error)
                 continue
 
+            # the rule may have been edited since it was last shown, so say what
+            # is actually being sent, warnings included
+            for warning in decision.warnings():
+                write("  ! %s" % warning)
+
             rule = decision.build()
             apply_decision(db, entry, rule)
             applied += 1
             write("  queued: %s %s as '%s'" % (rule.action, rule.duration, rule.name))
+            for line in rules.describe_rule(rule).split("\n")[1:]:
+                write("  %s" % line)
             break
 
     return applied
