@@ -356,16 +356,15 @@ from `/etc/opensnitchd/default-config.json`.
 
 ## Packaging
 
-The client currently ships inside `python3-opensnitch-ui`, which depends on
-PyQt6. The code has no Qt dependency — `ui/tests/cli/test_no_qt.py` imports the
-whole package in a fresh interpreter and fails if anything reaches Qt — so
-installing from source on a server needs no Qt at all.
+`setup.py` declares no dependencies, so installing from source or with `pip`
+pulls in nothing: a server gets the client and the three modules listed under
+Requirements, and no Qt. `ui/tests/cli/test_no_qt.py` imports the whole package
+in a fresh interpreter and fails if anything reaches Qt.
 
-A Qt-free binary package needs the source split into three: a
-`python3-opensnitch-common` holding `opensnitch/{version,rule_consts,operands,
-auth,proto}` (about 400 hand written lines plus the generated protobuffers), with
-`python3-opensnitch-ui` and `opensnitch-cli` both depending on it. That
-restructures how the existing package is built, so it is left for its own change.
+The deb and rpm build one binary package, `python3-opensnitch-ui`, which depends
+on PyQt6 for the graphical interface, so the client ships inside it. Giving it a
+package of its own would mean splitting the shared modules out into a third one —
+worth doing only if there is demand for `apt install opensnitch-cli` on servers.
 
 ## Tests
 
