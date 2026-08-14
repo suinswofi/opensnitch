@@ -259,6 +259,16 @@ class Database:
             return self._db.execute("SELECT * FROM pending WHERE node=? AND signature=?",
                                     (node, signature)).fetchone()
 
+    def record_hit(self, entry_id):
+        """another connection covered by an entry, without touching its state.
+
+        Used when a decided entry is asked about again: unlike record_pending,
+        the decision stands, we only note the attempt.
+        """
+        with self._lock:
+            self._db.execute("UPDATE pending SET hits=hits+1, last_seen=? WHERE id=?",
+                             (int(time.time()), entry_id))
+
     def set_pending_state(self, entry_id, state, rule_json=None):
         with self._lock:
             self._db.execute(
@@ -327,6 +337,19 @@ class Database:
         with self._lock:
             cur = self._db.execute(query, args)
             return cur.rowcount
+
+    def undelivered(self, node, ntf_type):
+        """notifications for a node that the daemon has not confirmed yet.
+
+        'sent' counts too: the stream can be open without the daemon having
+        answered, and an unanswered row goes back to 'queued' anyway when the
+        stream closes.
+        """
+        with self._lock:
+            return self._db.execute(
+                "SELECT * FROM outbox WHERE node=? AND ntf_type=? AND state IN (?, ?) "
+                "ORDER BY id",
+                (node, ntf_type, OUT_QUEUED, OUT_SENT)).fetchall()
 
     def get_outbox(self, outbox_id):
         with self._lock:

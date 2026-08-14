@@ -180,6 +180,12 @@ Press `y`. It should say the rule was queued, and within a second `serve` should
 log a `DELETE_RULE` for the temporary rule followed by a `CHANGE_RULE` for the
 new one.
 
+One approval can settle several entries at once: everything still in the queue
+that the new rule covers is closed too, and each of their temporary rules is
+withdrawn — you are not asked once per destination for the same program. Only a
+rule that outlives the queue (`always`, `until restart`) settles other entries;
+a temporary decision answers just the one you were shown.
+
 **5. Confirm the rule reached the daemon.**
 
 ```bash
@@ -337,7 +343,12 @@ may connect to, so it is root-only. Use `sudo`.
 
 **A rule never took effect.** `sudo opensnitch-cli status` lists rules the daemon
 refused, with its own error message. The usual causes are a regular expression
-RE2 cannot compile and a duration Go cannot parse.
+RE2 cannot compile and a duration Go cannot parse. If `notifications queued` is
+not zero, the decisions simply have not been delivered yet: `serve` was not
+running, or the daemon was not connected — `review` warns about this when it
+finishes. Nothing is lost: they go out as soon as both are back, and until then
+`serve` answers a daemon that asks about a covered connection with the decided
+rule itself instead of a new temporary one.
 
 **Everything is blocked and you need to get out of it.** Set
 `policy.unreviewed_action = allow` and restart, or stop `opensnitch-cli`

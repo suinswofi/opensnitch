@@ -31,7 +31,7 @@ import hashlib
 import logging
 
 from opensnitch.rule_consts import RuleConsts
-from opensnitch.cli import durations, rules
+from opensnitch.cli import durations, match, rules
 
 PROVISIONAL_PREFIX = "cli-auto-"
 
@@ -137,6 +137,16 @@ class Policy:
         """
         try:
             sig = signature(node, con)
+
+            decided = self._decided_answer(node, con)
+            if decided is not None:
+                # keep "seen Nx / last seen" honest if this connection has a
+                # queue entry, without reopening it
+                existing = self._db.get_pending_by_signature(node, sig)
+                if existing is not None:
+                    self._db.record_hit(existing["id"])
+                return decided
+
             rule = build_provisional(con, sig, self._action, self._duration)
             if rule is None:
                 logger.warning("connection with no process and no destination, "
@@ -169,4 +179,46 @@ class Policy:
             return rule
         except Exception as e:
             logger.error("error handling AskRule, letting the daemon decide: %s", repr(e))
+            return None
+
+    def _decided_answer(self, node, con):
+        """the reviewed rule for a connection the daemon doesn't know about yet.
+
+        Between a decision being taken and the outbox delivering it, the daemon
+        still asks: review may have decided this very connection while 'serve'
+        was stopped, or approved a rule broad enough to cover it. Answering with
+        the decided rule applies the decision right now — the daemon installs
+        what we answer, and writes it to disk itself when the duration is
+        always. Answering with a fresh provisional rule instead would put a
+        temporary deny in front of an approved allow, and the daemon lets any
+        matching deny beat an allow (daemon/rule/loader.go FindFirstMatch).
+
+        Only undelivered decisions are looked at, on purpose: once the daemon
+        has confirmed a rule and asks anyway, the rule expired or was removed
+        over there, and the connection belongs back in the review queue.
+
+        Never raises, and answers None when in doubt: the provisional flow is
+        the safe fallback.
+        """
+        from google.protobuf import json_format
+        from opensnitch.cli.proto import ui_pb2
+
+        try:
+            allow = None
+            for row in self._db.undelivered(node, ui_pb2.CHANGE_RULE):
+                rule = ui_pb2.Rule()
+                try:
+                    json_format.Parse(row["rule_json"], rule)
+                except Exception:
+                    continue
+                if match.rule_matches(rule, con) is not True:
+                    continue
+                # same tie break the daemon applies: a deny beats an allow
+                if rule.action in (RuleConsts.ACTION_DENY, RuleConsts.ACTION_REJECT):
+                    return rule
+                if allow is None:
+                    allow = rule
+            return allow
+        except Exception as e:
+            logger.warning("could not check for an undelivered decision: %s", repr(e))
             return None

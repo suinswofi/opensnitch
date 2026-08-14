@@ -27,7 +27,7 @@ import time
 
 from opensnitch import operands
 from opensnitch.rule_consts import RuleConsts
-from opensnitch.cli import durations, rules
+from opensnitch.cli import durations, match, rules
 
 SEPARATOR = "─" * 62
 
@@ -283,6 +283,23 @@ def edit_menu(decision, read, write):
             write("  ?")
 
 
+def _queue_provisional_delete(db, entry):
+    """withdraws the temporary rule an entry was answered with."""
+    from google.protobuf import json_format
+    from opensnitch.cli.proto import ui_pb2
+
+    if not entry["provisional_name"]:
+        return
+    stale = ui_pb2.Rule(name=entry["provisional_name"])
+    # the daemon only reads the name of the rule to delete, but it refuses a
+    # rule without an operator, so give it one
+    stale.operator.type = RuleConsts.RULE_TYPE_SIMPLE
+    stale.operator.operand = "true"
+    stale.operator.data = ""
+    db.queue_notification(entry["node"], ui_pb2.DELETE_RULE,
+                          json_format.MessageToJson(stale), pending_id=entry["id"])
+
+
 def apply_decision(db, entry, rule):
     """queues the rule for the service to send, and closes the queue entry.
 
@@ -293,23 +310,50 @@ def apply_decision(db, entry, rule):
     """
     from google.protobuf import json_format
     from opensnitch.cli.proto import ui_pb2
-
-    if entry["provisional_name"]:
-        stale = ui_pb2.Rule(name=entry["provisional_name"])
-        # the daemon only reads the name of the rule to delete, but it refuses a
-        # rule without an operator, so give it one
-        stale.operator.type = RuleConsts.RULE_TYPE_SIMPLE
-        stale.operator.operand = "true"
-        stale.operator.data = ""
-        db.queue_notification(entry["node"], ui_pb2.DELETE_RULE,
-                              json_format.MessageToJson(stale), pending_id=entry["id"])
-
-    db.queue_notification(entry["node"], ui_pb2.CHANGE_RULE,
-                          json_format.MessageToJson(rule), pending_id=entry["id"])
     from opensnitch.cli import db as dbmod
 
+    _queue_provisional_delete(db, entry)
+    db.queue_notification(entry["node"], ui_pb2.CHANGE_RULE,
+                          json_format.MessageToJson(rule), pending_id=entry["id"])
     db.set_pending_state(entry["id"], dbmod.STATE_DECIDED,
                          json_format.MessageToJson(rule))
+
+
+# a decision that outlives the queue can settle other entries; a temporary one
+# leaves them pending, the daemon will ask about them again anyway
+DURABLE_DURATIONS = (RuleConsts.DURATION_ALWAYS, RuleConsts.DURATION_UNTIL_RESTART)
+
+
+def resolve_covered(db, node, rule, entries):
+    """closes the queue entries an approved rule already covers.
+
+    Whoever approves 'allow always process.path is X' has answered every queued
+    connection of X, so prompting again for each destination is noise. And
+    worse than noise: every entry keeps its own temporary deny rule alive on
+    the daemon, and the daemon lets any matching deny beat an allow
+    (daemon/rule/loader.go FindFirstMatch), so the connections the new rule was
+    meant to allow would stay blocked until those expire. Withdraw them and
+    mark the entries decided by this rule.
+
+    Returns the entries that were closed.
+    """
+    from google.protobuf import json_format
+    from opensnitch.cli import db as dbmod
+
+    if rule.duration not in DURABLE_DURATIONS:
+        return []
+
+    rule_json = json_format.MessageToJson(rule)
+    covered = []
+    for entry in entries:
+        if entry["node"] != node:
+            continue
+        if match.rule_matches(rule, entry_connection(entry)) is not True:
+            continue
+        _queue_provisional_delete(db, entry)
+        db.set_pending_state(entry["id"], dbmod.STATE_DECIDED, rule_json)
+        covered.append(entry)
+    return covered
 
 
 def review_loop(db, entries, config, read=input, write=print):
@@ -317,10 +361,20 @@ def review_loop(db, entries, config, read=input, write=print):
     default_duration = RuleConsts.DURATION_ALWAYS
     applied = 0
     total = len(entries)
+    resolved_ids = set()
+    # per node: the names already in use, plus everything named this session.
+    # Rule names are how rules are replaced and deleted, so a name may not be
+    # handed out twice even when db.rule_names can't know about it yet.
+    taken_by_node = {}
 
     for index, entry in enumerate(entries, start=1):
+        if entry["id"] in resolved_ids:
+            continue
         con = entry_connection(entry)
-        taken = db.rule_names(entry["node"])
+        taken = taken_by_node.get(entry["node"])
+        if taken is None:
+            taken = db.rule_names(entry["node"])
+            taken_by_node[entry["node"]] = taken
         decision = Decision(entry, con, RuleConsts.ACTION_ALLOW, default_duration, taken)
 
         render_entry(entry, con, index, total, write)
@@ -370,9 +424,20 @@ def review_loop(db, entries, config, read=input, write=print):
             rule = decision.build()
             apply_decision(db, entry, rule)
             applied += 1
+            taken.add(rule.name)
             write("  queued: %s %s as '%s'" % (rule.action, rule.duration, rule.name))
             for line in rules.describe_rule(rule).split("\n")[1:]:
                 write("  %s" % line)
+
+            covered = resolve_covered(db, entry["node"], rule, entries[index:])
+            if len(covered) > 0:
+                write("  this rule also settles %d more queued connection(s), "
+                      "their temporary rules are withdrawn:" % len(covered))
+            for other in covered:
+                resolved_ids.add(other["id"])
+                destination = other["dst_host"] or other["dst_ip"] or "?"
+                write("    %s -> %s:%s" % (other["process_path"] or "(unknown process)",
+                                           destination, other["dst_port"]))
             break
 
     return applied

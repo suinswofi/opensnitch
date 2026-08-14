@@ -138,3 +138,91 @@ class TestPolicy:
     def test_never_raises(self, db, config):
         p = policy.Policy(db, config)
         assert p.on_ask("unix:/local", object()) is None
+
+
+class TestUndeliveredDecisions:
+    """a decision taken while the daemon was away is applied when it asks again.
+
+    Until the outbox has delivered a decision, answering with a fresh temporary
+    deny would put it in front of an approved allow — and the daemon lets any
+    matching deny beat an allow (daemon/rule/loader.go FindFirstMatch).
+    """
+
+    def _decide(self, db, config, connection, action="allow", duration="always"):
+        from opensnitch.cli import review
+
+        p = policy.Policy(db, config)
+        p.on_ask("unix:/local", connection)
+        entry = db.pending()[0]
+        con = review.entry_connection(entry)
+        decision = review.Decision(entry, con, action, duration, set())
+        review.apply_decision(db, entry, decision.build())
+        return p
+
+    def _deliver_everything(self, db):
+        for row in db.queued_notifications():
+            db.mark_sent(row["id"], row["id"])
+            db.mark_result(row["id"], True)
+
+    def test_asking_again_gets_the_decision_not_a_new_provisional(self, db, config,
+                                                                  connection):
+        p = self._decide(db, config, connection)
+
+        rule = p.on_ask("unix:/local", connection)
+
+        assert rule.action == "allow"
+        assert rule.duration == "always"
+        # the decision stands, the entry is not reopened
+        assert db.pending_count() == 0
+
+    def test_the_attempt_still_counts(self, db, config, connection):
+        p = self._decide(db, config, connection)
+        p.on_ask("unix:/local", connection)
+
+        entry = db.pending(state="decided")[0]
+        assert entry["hits"] == 2
+
+    def test_a_broad_decision_covers_a_new_destination(self, db, config, connection):
+        """allow-always on the executable answers its other destinations too."""
+        p = self._decide(db, config, connection)
+
+        other = make_connection(dst_host="pypi.org", dst_ip="151.101.0.223")
+        rule = p.on_ask("unix:/local", other)
+
+        assert rule.action == "allow"
+        # covered, not queued: reviewing it again would be the duplicate-prompt
+        # problem all over
+        assert db.pending_count() == 0
+
+    def test_an_undelivered_deny_beats_an_undelivered_allow(self, db, config,
+                                                            connection):
+        from google.protobuf import json_format
+        p = self._decide(db, config, connection)
+        deny = rules.build_rule(
+            "deny-curl", "deny", "always",
+            [rules.new_operator("simple", "process.path", "/usr/bin/curl")])
+        db.queue_notification("unix:/local", ui_pb2.CHANGE_RULE,
+                              json_format.MessageToJson(deny))
+
+        assert p.on_ask("unix:/local", connection).action == "deny"
+
+    def test_a_delivered_decision_is_the_daemons_business_again(self, db, config,
+                                                                connection):
+        """once the daemon confirmed the rule and still asks, it expired or was
+        removed over there: back to the provisional flow and the queue."""
+        p = self._decide(db, config, connection, duration="1h")
+        self._deliver_everything(db)
+
+        rule = p.on_ask("unix:/local", connection)
+
+        assert rule.action == "deny"
+        assert rule.name.startswith(policy.PROVISIONAL_PREFIX)
+        assert db.pending_count() == 1
+
+    def test_another_nodes_decision_does_not_leak(self, db, config, connection):
+        self._decide(db, config, connection)
+
+        p2 = policy.Policy(db, config)
+        rule = p2.on_ask("tcp:10.0.0.7:12345", connection)
+
+        assert rule.name.startswith(policy.PROVISIONAL_PREFIX)

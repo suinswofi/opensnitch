@@ -110,6 +110,117 @@ class TestReviewLoop:
         assert [t for t, _ in sent_rules(db)] == [ui_pb2.CHANGE_RULE]
 
 
+class TestCoveredEntries:
+    """one approval settles every queued connection the new rule covers.
+
+    Anything less prompts once per destination for the same program, and —
+    worse — leaves each entry's temporary deny rule alive on the daemon, where
+    a matching deny beats the freshly approved allow (daemon/rule/loader.go
+    FindFirstMatch).
+    """
+
+    def _queue_for(self, db, sig, host, path="/usr/lib/apt/methods/http"):
+        con = ui_pb2.Connection(protocol="udp", dst_ip="127.0.0.53", dst_host=host,
+                                dst_port=53, user_id=42, process_id=9535,
+                                process_path=path, process_args=[path])
+        db.record_pending("unix:/local", sig, con,
+                          {"name": "cli-auto-%s" % sig, "action": "deny",
+                           "duration": "1h", "expires_in": 3600})
+
+    def test_identical_entries_are_not_asked_about_again(self, db, config):
+        for i, host in enumerate(("archive.ubuntu.com", "security.ubuntu.com",
+                                  "packages.linuxmint.com")):
+            self._queue_for(db, "sig%d" % i, host)
+
+        prompts = []
+
+        def read(prompt):
+            prompts.append(prompt)
+            return "y"
+
+        applied = review.review_loop(db, db.pending(), config, read=read, write=silent)
+
+        assert applied == 1
+        assert len(prompts) == 1
+        assert db.pending_count() == 0
+
+    def test_the_covered_temporary_rules_are_withdrawn(self, db, config):
+        for i, host in enumerate(("archive.ubuntu.com", "security.ubuntu.com")):
+            self._queue_for(db, "sig%d" % i, host)
+
+        review.review_loop(db, db.pending(), config, read=scripted(["y"]), write=silent)
+
+        deletes = [rule["name"] for t, rule in sent_rules(db) if t == ui_pb2.DELETE_RULE]
+        assert deletes == ["cli-auto-sig0", "cli-auto-sig1"]
+        changes = [rule for t, rule in sent_rules(db) if t == ui_pb2.CHANGE_RULE]
+        assert len(changes) == 1
+
+    def test_a_different_program_is_still_asked(self, db, config):
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "connectivity-check.ubuntu.com",
+                        path="/usr/sbin/NetworkManager")
+
+        applied = review.review_loop(db, db.pending(), config,
+                                     read=scripted(["y", "y"]), write=silent)
+
+        assert applied == 2
+        assert db.pending_count() == 0
+
+    def test_a_temporary_decision_settles_nothing(self, db, config):
+        """a 1h allow answers this entry, not the queue: the others come back."""
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "security.ubuntu.com")
+
+        # e -> duration -> 1h -> apply, then skip the second entry
+        answers = ["e", "3", "5", "a", "s"]
+        applied = review.review_loop(db, db.pending(), config,
+                                     read=scripted(answers), write=silent)
+
+        assert applied == 1
+        assert db.pending_count() == 1
+
+    def test_a_narrowed_rule_only_settles_what_it_covers(self, db, config):
+        """requiring the host too must keep the other destinations in the queue."""
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "security.ubuntu.com")
+
+        # e -> also require -> this host -> apply, then skip the second entry
+        answers = ["e", "5", "2", "a", "s"]
+        applied = review.review_loop(db, db.pending(), config,
+                                     read=scripted(answers), write=silent)
+
+        assert applied == 1
+        assert db.pending_count() == 1
+
+    def test_the_user_is_told_what_was_settled(self, db, config):
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "security.ubuntu.com")
+
+        written = []
+        review.review_loop(db, db.pending(), config, read=scripted(["y"]),
+                           write=written.append)
+
+        text = "\n".join(written)
+        assert "settles 1 more" in text
+        assert "security.ubuntu.com" in text
+
+    def test_two_rules_in_one_session_cannot_share_a_name(self, db, config):
+        """db.rule_names can't know the names handed out this session.
+
+        Both entries are narrowed to their host, so neither covers the other
+        and both rules derive their name from the same executable.
+        """
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "security.ubuntu.com")
+
+        answers = ["e", "5", "2", "a", "e", "5", "2", "a"]
+        review.review_loop(db, db.pending(), config, read=scripted(answers), write=silent)
+
+        names = [rule["name"] for t, rule in sent_rules(db) if t == ui_pb2.CHANGE_RULE]
+        assert len(names) == 2
+        assert len(set(names)) == 2, "both rules got the name %s" % names[0]
+
+
 class TestEditing:
 
     def test_switch_to_the_host_wildcard_and_deny_forever(self, db, config, connection):

@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 
 from opensnitch.version import version
 from opensnitch.rule_consts import RuleConsts
@@ -109,9 +110,27 @@ def cmd_review(args, config):
         applied = 0
 
     if applied:
-        print("\n%d rule(s) queued. The service applies them within a second; "
-              "run 'opensnitch-cli status' to check." % applied)
+        if len(_served_nodes(db)) > 0:
+            print("\n%d rule(s) queued. The service applies them within a second; "
+                  "run 'opensnitch-cli status' to check." % applied)
+        else:
+            print("\n%d rule(s) queued, but no daemon is connected right now — is "
+                  "'opensnitch-cli serve' running? The decisions are kept, and are "
+                  "applied as soon as the service and the daemon are back." % applied)
     return 0
+
+
+def _served_nodes(db, max_age=90):
+    """the nodes the serve service is talking to right now.
+
+    The online flag alone can lie: a serve process that dies never marks its
+    nodes offline. While a node is connected its last_seen is refreshed every
+    30 seconds (server.py LAST_SEEN_INTERVAL), so anything older than a couple
+    of those is not actually being served.
+    """
+    now = time.time()
+    return [n for n in db.nodes()
+            if n["online"] and n["last_seen"] and now - n["last_seen"] < max_age]
 
 
 def cmd_decide(args, config):
