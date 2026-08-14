@@ -24,6 +24,7 @@ configured for either of them connects to the other without changes.
 import logging
 import os
 import signal
+import socket
 import threading
 import time
 from concurrent import futures
@@ -58,6 +59,36 @@ def unix_socket_path(address):
     if address.startswith("unix:") and not address.startswith("unix:@"):
         return address[len("unix:"):]
     return None
+
+
+def check_socket_free(sock_path):
+    """refuses to start if something is already serving that socket.
+
+    grpc does not fail when a unix socket is already there: it unlinks it and
+    puts its own in its place, and add_insecure_port still reports success. So
+    starting while opensnitch-ui is running would quietly take the daemon away
+    from it. Ask the socket whether anyone is home instead.
+    """
+    if not os.path.exists(sock_path):
+        return
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(1)
+    try:
+        probe.connect(sock_path)
+    except (ConnectionRefusedError, FileNotFoundError):
+        # nothing behind it, it's left over from a process that died
+        logger.info("removing the socket left behind at %s", sock_path)
+        return
+    except OSError:
+        # can't tell, let grpc have a go
+        return
+    else:
+        raise RuntimeError(
+            "{0} is already being served. opensnitch-ui or another opensnitch-cli "
+            "is using it, and a daemon can only talk to one of them".format(sock_path))
+    finally:
+        probe.close()
 
 
 class Server:
@@ -101,6 +132,7 @@ class Server:
             directory = os.path.dirname(sock_path)
             if directory != "" and not os.path.isdir(directory):
                 os.makedirs(directory, mode=0o700, exist_ok=True)
+            check_socket_free(sock_path)
 
         # a worker is taken for as long as a node's notifications stream is
         # open, one more while a connection is being asked about, and Ping needs
