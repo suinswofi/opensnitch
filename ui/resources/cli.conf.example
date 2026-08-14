@@ -1,0 +1,64 @@
+# Configuration of opensnitch-cli, the headless client.
+#
+# Copy to /etc/opensnitch/cli.conf, or to ~/.config/opensnitch/cli.conf.
+# Every value below is the default: with no configuration file at all,
+# opensnitch-cli behaves exactly as if this file were in place.
+#
+# @doc: https://github.com/evilsocket/opensnitch/wiki
+
+[server]
+# Where the daemon connects to. Must match Server.Address in the daemon's
+# /etc/opensnitchd/default-config.json. Only one program can listen here, so
+# opensnitch-cli serve and opensnitch-ui cannot both run against the same daemon.
+address = unix:///tmp/osui.sock
+
+# simple, tls-simple or tls-mutual. The same values, and the same certificates,
+# the graphical interface uses.
+auth_type = simple
+tls_ca_cert =
+tls_cert =
+tls_key =
+
+# One worker is taken for as long as each node's notification stream is open,
+# another while a connection is being asked about, so roughly three per node.
+max_workers = 10
+max_clients = 0
+keepalive = 5000
+keepalive_timeout = 20000
+max_message_length = 4194304
+
+[policy]
+# What to answer for a connection nobody has reviewed yet: allow, deny or reject.
+#
+# The default is allow, so a server keeps working while the queue waits for you.
+# The connection is still recorded for review, and the decision you take governs
+# every later connection. Set this to deny if this machine should block anything
+# that has not been approved.
+unreviewed_action = allow
+
+# How long that answer lasts before the connection is asked about again.
+# Long enough not to ask about every packet, short enough that a connection you
+# never review comes back rather than being allowed for good.
+# Days and weeks are not accepted: the daemon parses this with Go's
+# time.ParseDuration, which only knows ns, us, ms, s, m and h.
+unreviewed_duration = 1h
+
+# What the daemon should do while it is waiting for an answer to another
+# connection, or if this program stops responding. allow or deny.
+default_action = allow
+
+# Stop recording new connections past this many unreviewed entries. Connections
+# are still answered, they just stop being added to the queue; opensnitch-cli
+# status reports how many were missed.
+queue_max = 1000
+
+[db]
+path = /var/lib/opensnitch/cli.db
+# Reviewed entries are removed after this many days. 0 keeps them forever.
+retention_days = 30
+
+[log]
+level = info
+# empty logs to stderr, which is what the systemd unit wants
+file =
+store_alerts = false
