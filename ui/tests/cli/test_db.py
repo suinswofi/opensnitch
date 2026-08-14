@@ -77,6 +77,17 @@ class TestOutbox:
         assert db.requeue_sent() == 1
         assert db.get_outbox(outbox_id)["state"] == dbmod.OUT_QUEUED
 
+    def test_requeueing_one_node_leaves_the_others_alone(self, db):
+        """when a node's stream drops, only its own notifications go back."""
+        mine = db.queue_notification("a", 10, "{}")
+        other = db.queue_notification("b", 10, "{}")
+        db.mark_sent(mine, 1)
+        db.mark_sent(other, 2)
+
+        assert db.requeue_sent("a") == 1
+        assert db.get_outbox(mine)["state"] == dbmod.OUT_QUEUED
+        assert db.get_outbox(other)["state"] == dbmod.OUT_SENT
+
     def test_a_decision_survives_the_service_being_down(self, db):
         """review writes, serve reads later: nothing is lost in between."""
         db.queue_notification("n", 10, '{"name":"r"}')

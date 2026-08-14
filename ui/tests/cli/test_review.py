@@ -161,6 +161,25 @@ class TestEditing:
         assert applied == 0
         assert db.pending_count() == 1
 
+    def test_no_duplicate_when_the_match_becomes_a_condition(self, db, config, connection):
+        """add a condition, then switch the match to that same candidate.
+
+        The rule must not require the same thing twice.
+        """
+        queue_one(db, connection)
+        # e -> also require -> candidate 2 -> match on -> candidate 3 (which is
+        # the same object, the list shifted by removing the selected) -> apply
+        entry = db.pending()[0]
+        con = review.entry_connection(entry)
+        decision = review.Decision(entry, con, "allow", "always", set())
+
+        decision.extra.append(decision.candidates[2])
+        decision.selected = decision.candidates[2]
+
+        ops = decision.operators()
+        pairs = [(o.operand, o.data) for o in ops]
+        assert len(pairs) == len(set(pairs)), "duplicate operands: %s" % pairs
+
     def test_a_custom_regexp_go_cannot_compile_is_refused(self, db, config, connection):
         queue_one(db, connection)
         written = []

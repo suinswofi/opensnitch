@@ -77,8 +77,9 @@ def check_socket_free(sock_path):
     try:
         probe.connect(sock_path)
     except (ConnectionRefusedError, FileNotFoundError):
-        # nothing behind it, it's left over from a process that died
-        logger.info("removing the socket left behind at %s", sock_path)
+        # nothing behind it, it's left over from a process that died; grpc
+        # replaces it when we bind
+        logger.info("taking over the socket left behind at %s", sock_path)
         return
     except OSError:
         # can't tell, let grpc have a go

@@ -127,13 +127,20 @@ class Service(ui_pb2_grpc.UIServicer):
         peer = context.peer()
         addr = self.peer_addr(peer)
 
+        # Always a fresh Node. A daemon reconnecting over a unix socket shows up
+        # with the same peer string as before, and the old Node's stop event was
+        # set when its stream closed; reusing it would end the new notifications
+        # stream immediately, and the daemon would reconnect in a loop from then
+        # on. The old session, if one is somehow still open, ends through its own
+        # Node's stop event.
         with self._lock:
-            node = self._nodes.get(addr)
-            if node is None or node.peer != peer:
-                node = Node(addr, peer)
-                self._nodes[addr] = node
+            old = self._nodes.get(addr)
+            node = Node(addr, peer)
             node.hostname = node_config.name
             node.version = node_config.version
+            self._nodes[addr] = node
+        if old is not None:
+            old.stop.set()
 
         self._db.node_seen(addr, node_config.name, node_config.version, online=True)
         self._db.replace_rules(addr, node_config.rules)
@@ -188,9 +195,8 @@ class Service(ui_pb2_grpc.UIServicer):
             return
 
         def on_closed():
-            logger.info("node disconnected: %s", addr)
             node.stop.set()
-            self._db.node_offline(addr)
+            self._on_stream_closed(node)
 
         context.add_callback(on_closed)
 
@@ -224,6 +230,26 @@ class Service(ui_pb2_grpc.UIServicer):
             logger.debug("notifications stream of %s closed: %s", node.addr, repr(e))
         finally:
             node.stop.set()
+            self._on_stream_closed(node)
+
+    def _on_stream_closed(self, node):
+        """a notification stream ended, cleanly or not.
+
+        Anything sent on it and not yet answered goes back in the queue, to be
+        sent again when the daemon comes back: re-sending is safe, the daemon
+        replaces rules by name and deleting a rule that isn't there does nothing.
+        The node is only marked offline if a newer session hasn't replaced it.
+        """
+        requeued = self._db.requeue_sent(node.addr)
+        if requeued:
+            logger.info("%s went away with %d unanswered notifications, "
+                        "they will be sent again when it returns", node.addr, requeued)
+
+        with self._lock:
+            current = self._nodes.get(node.addr) is node
+        if current:
+            logger.info("node disconnected: %s", node.addr)
+            self._db.node_offline(node.addr)
 
     def PostAlert(self, alert, context):
         addr = self.peer_addr(context.peer())

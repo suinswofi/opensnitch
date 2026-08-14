@@ -203,6 +203,72 @@ class TestOverARealSocket:
             time.sleep(0.05)
         assert server.db.get_outbox(outbox_id)["state"] == dbmod.OUT_DONE
 
+    def test_a_restarted_daemon_can_come_back(self, running, tmp_path):
+        """the daemon reconnects with the same peer string over a unix socket.
+
+        The first version of the service kept the old session's state and its
+        already-fired stop event, so after one daemon restart the notifications
+        stream ended the moment it opened and no decision could ever be
+        delivered again. Three lifetimes over the same socket, to be sure.
+        """
+        server, daemon = running
+        daemon.subscribe()
+        daemon.open_notifications()
+        daemon.close()
+        time.sleep(0.3)
+
+        second = FakeDaemon("unix://%s" % (tmp_path / "osui.sock"))
+        try:
+            second.subscribe()
+            second.open_notifications()
+
+            server.db.queue_notification("unix:/local", ui_pb2.CHANGE_RULE,
+                                         json_format.MessageToJson(ui_pb2.Rule(name="after")))
+            server.drain_outbox()
+
+            got = second.wait_for(1)
+            assert len(got) == 1, "the reconnected daemon never got the notification"
+            assert got[0].rules[0].name == "after"
+        finally:
+            second.close()
+
+    def test_a_decision_the_daemon_never_answered_is_sent_again(self, running, tmp_path):
+        """the stream can drop between sending and the daemon's reply.
+
+        The row was stuck in 'sent' until the service restarted; now it goes
+        back in the queue when the stream closes, and the next session gets it.
+        """
+        server, daemon = running
+        daemon.subscribe()
+        # no notifications stream answering: send, then let the daemon vanish
+        outbox_id = server.db.queue_notification(
+            "unix:/local", ui_pb2.CHANGE_RULE,
+            json_format.MessageToJson(ui_pb2.Rule(name="unanswered")))
+
+        stream = daemon.stub.Notifications(iter([ui_pb2.NotificationReply(id=0, code=ui_pb2.OK)]))
+        # sending an already-exhausted request stream makes the service's reader
+        # finish at once, like a daemon that died mid-conversation
+        server.drain_outbox()
+        try:
+            list(stream)
+        except grpc.RpcError:
+            pass
+        time.sleep(0.3)
+
+        row = server.db.get_outbox(outbox_id)
+        assert row["state"] == dbmod.OUT_QUEUED, \
+            "an unanswered notification must not stay in 'sent': %s" % row["state"]
+
+        second = FakeDaemon("unix://%s" % (tmp_path / "osui.sock"))
+        try:
+            second.subscribe()
+            second.open_notifications()
+            server.drain_outbox()
+            got = second.wait_for(1)
+            assert [n.rules[0].name for n in got] == ["unanswered"]
+        finally:
+            second.close()
+
     def test_a_second_client_cannot_take_the_socket(self, running, tmp_path):
         """opensnitch-ui and opensnitch-cli serve cannot both own one daemon."""
         server, _ = running

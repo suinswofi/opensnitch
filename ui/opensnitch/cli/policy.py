@@ -153,7 +153,8 @@ class Policy:
 
             # A full queue must never stop us answering: the packet is waiting.
             # Existing entries still count new attempts, only new signatures are
-            # refused, and the count is reported by 'opensnitch-cli status'.
+            # refused. The count only exists in this process, so it is reported
+            # through the log, not by 'opensnitch-cli status'.
             if self._db.pending_count() >= self._queue_max:
                 existing = self._db.get_pending_by_signature(node, sig)
                 if existing is None:

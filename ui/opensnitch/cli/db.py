@@ -311,16 +311,21 @@ class Database:
                 "UPDATE outbox SET state=?, last_error=?, updated=? WHERE ntf_id=? AND state=?",
                 (OUT_DONE if ok else OUT_ERROR, error, int(time.time()), ntf_id, OUT_SENT))
 
-    def requeue_sent(self):
+    def requeue_sent(self, node=None):
         """puts unanswered notifications back in the queue.
 
-        Called at start up: anything still marked as sent was in flight when the
-        service stopped. Re-sending is safe, the daemon replaces rules by name
-        and deleting a rule that isn't there does nothing.
+        Called at start up for everything (anything still marked as sent was in
+        flight when the service stopped), and for one node when its stream
+        closes before it answered. Re-sending is safe, the daemon replaces
+        rules by name and deleting a rule that isn't there does nothing.
         """
+        query = "UPDATE outbox SET state=? WHERE state=?"
+        args = [OUT_QUEUED, OUT_SENT]
+        if node is not None:
+            query += " AND node=?"
+            args.append(node)
         with self._lock:
-            cur = self._db.execute("UPDATE outbox SET state=? WHERE state=?",
-                                   (OUT_QUEUED, OUT_SENT))
+            cur = self._db.execute(query, args)
             return cur.rowcount
 
     def get_outbox(self, outbox_id):

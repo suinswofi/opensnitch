@@ -120,6 +120,10 @@ class Decision:
             ops.append(rules.new_operator(self.selected["type"], self.selected["operand"],
                                           self.selected["data"]))
         for cand in self.extra:
+            # the match can be changed to a candidate that was already added as
+            # a condition; don't require the same thing twice
+            if cand is self.selected:
+                continue
             ops.append(rules.new_operator(cand["type"], cand["operand"], cand["data"]))
 
         if self.untrusted_command() and self.con.process_path != "":
