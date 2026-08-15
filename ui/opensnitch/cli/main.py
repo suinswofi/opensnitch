@@ -120,46 +120,67 @@ def cmd_pending(args, config):
 
 
 def cmd_undo(args, config):
-    """takes back a decision: withdraws its rule, reopens the queue entry."""
+    """takes back a decision: withdraws its rule, reopens what it decided.
+
+    Given a queue id (what pending --decided shows) or a rule name (what
+    rules shows): people look for the thing to reverse in both places.
+    """
     from google.protobuf import json_format
     from opensnitch.cli.proto import ui_pb2
     from opensnitch.cli import db as dbmod
 
     db = open_db(config)
-    entry = db.get_pending(args.id)
-    if entry is None:
-        print("opensnitch-cli: no queue entry with id %s" % args.id, file=sys.stderr)
-        return 1
-    if entry["state"] != dbmod.STATE_DECIDED:
-        print("opensnitch-cli: entry %s is %s, there is no decision to undo" % (
-            args.id, entry["state"]), file=sys.stderr)
-        return 1
 
-    try:
-        rule_name = json.loads(entry["decided_rule"] or "{}").get("name")
-    except ValueError:
-        rule_name = None
-    if not rule_name:
-        print("opensnitch-cli: entry %s does not say which rule decided it" % args.id,
-              file=sys.stderr)
-        return 1
+    entry = db.get_pending(int(args.what)) if args.what.isdigit() else None
+    if entry is not None:
+        if entry["state"] != dbmod.STATE_DECIDED:
+            print("opensnitch-cli: entry %s is %s, there is no decision to undo" % (
+                args.what, entry["state"]), file=sys.stderr)
+            return 1
+        try:
+            rule_name = json.loads(entry["decided_rule"] or "{}").get("name")
+        except ValueError:
+            rule_name = None
+        if not rule_name:
+            print("opensnitch-cli: entry %s does not say which rule decided it" % args.what,
+                  file=sys.stderr)
+            return 1
+        node = entry["node"]
+    else:
+        rule_name = args.what
+        # a rule name is only unique on one node; the entries it decided say
+        # which, otherwise --node has to
+        nodes = sorted(set(e["node"] for e in db.decided_by(None, rule_name)))
+        if len(nodes) == 1 and (args.node is None or args.node == nodes[0]):
+            node = nodes[0]
+        else:
+            try:
+                node = resolve_node(db, args.node)
+            except CommandError as e:
+                print("opensnitch-cli: %s" % e, file=sys.stderr)
+                return 1
 
-    # the same rule may have settled other queued connections; they all come
+    # the same rule may have settled several queued connections; they all come
     # back, since the rule that answered them is going away
-    covered = db.decided_by(entry["node"], rule_name)
+    covered = db.decided_by(node, rule_name)
     stale = ui_pb2.Rule(name=rule_name)
     stale.operator.type = RuleConsts.RULE_TYPE_SIMPLE
     stale.operator.operand = "true"
-    db.queue_notification(entry["node"], ui_pb2.DELETE_RULE, json_format.MessageToJson(stale),
-                          pending_id=entry["id"])
+    db.queue_notification(node, ui_pb2.DELETE_RULE, json_format.MessageToJson(stale),
+                          pending_id=covered[0]["id"] if covered else None)
     db.reopen([e["id"] for e in covered])
 
-    print("queued: delete rule '%s'; %d connection(s) back in the review queue" % (
-        rule_name, len(covered)))
-    for other in covered:
-        destination = other["dst_host"] or other["dst_ip"] or "?"
-        print("  %s  %s -> %s:%s" % (other["id"], other["process_path"] or "(unknown process)",
-                                     destination, other["dst_port"]))
+    if covered:
+        print("queued: delete rule '%s' on %s; %d connection(s) back in the review queue" % (
+            rule_name, node, len(covered)))
+        for other in covered:
+            destination = other["dst_host"] or other["dst_ip"] or "?"
+            print("  %s  %s -> %s:%s" % (other["id"], other["process_path"] or "(unknown process)",
+                                         destination, other["dst_port"]))
+    else:
+        print("queued: delete rule '%s' on %s. No queued connection recorded that rule, so "
+              "nothing to re-queue: the daemon will ask again the next time the program "
+              "connects" % (rule_name, node))
     return 0
 
 
@@ -487,7 +508,9 @@ def build_parser():
 
     undo = add_command("undo", help="take a decision back: withdraw its rule, re-queue "
                                     "the connection")
-    undo.add_argument("id", type=int)
+    undo.add_argument("what", metavar="ID|NAME",
+                      help="a queue id from 'pending --decided', or a rule name from 'rules'")
+    undo.add_argument("--node", help="which daemon, when the name alone does not say")
     undo.set_defaults(func=cmd_undo)
 
     review_cmd = add_command("review", help="go through the queue one by one")

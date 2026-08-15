@@ -174,6 +174,37 @@ class TestUndo:
         assert len(queued(db)) == 1, "one rule, one delete"
         assert "2 connection(s) back" in capsys.readouterr().out
 
+    def test_a_rule_name_works_too(self, db, config, connection, capsys):
+        """`rules` shows names, not ids, and that is where people look."""
+        entry_id = self._decide(db, connection)
+
+        assert run(["undo", "deny-always-simple-usr-bin-curl"], config) == 0
+
+        assert db.get_pending(entry_id)["state"] == dbmod.STATE_PENDING
+        [(ntf_type, rule)] = queued(db)
+        assert ntf_type == ui_pb2.DELETE_RULE
+        assert rule["name"] == "deny-always-simple-usr-bin-curl"
+
+    def test_a_name_no_entry_recorded_still_withdraws_the_rule(self, db, config, capsys):
+        """the daemon asks again next time, so nothing to re-queue by hand."""
+        db.node_seen("unix:/local", "h", "1.9.0")
+
+        assert run(["undo", "allow-always-simple-usr-bin-wget"], config) == 0
+
+        [(ntf_type, rule)] = queued(db)
+        assert ntf_type == ui_pb2.DELETE_RULE
+        assert rule["name"] == "allow-always-simple-usr-bin-wget"
+        assert "nothing to re-queue" in capsys.readouterr().out
+
+    def test_a_name_needs_a_node_when_it_cannot_be_inferred(self, db, config, capsys):
+        db.node_seen("unix:/local", "h", "1.9.0")
+        db.node_seen("ipv4:10.0.0.2", "h2", "1.9.0")
+
+        assert run(["undo", "allow-always-simple-x"], config) == 1
+        assert "--node" in capsys.readouterr().err
+        assert run(["undo", "allow-always-simple-x", "--node", "ipv4:10.0.0.2"], config) == 0
+        assert db.queued_notifications()[0]["node"] == "ipv4:10.0.0.2"
+
     def test_only_a_decided_entry_can_be_undone(self, db, config, connection, capsys):
         entry_id, _ = db.record_pending("unix:/local", "sig", connection, {})
         assert run(["undo", str(entry_id)], config) == 1

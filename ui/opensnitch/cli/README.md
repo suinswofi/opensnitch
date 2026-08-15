@@ -290,7 +290,7 @@ because the daemon lowercases it and it would never match.
 | `allow ID [--match OPERAND] [--duration D] [--name N]` | approve without prompting |
 | `deny ID` / `reject ID` | refuse without prompting |
 | `drop ID` | remove from the queue without creating a rule |
-| `undo ID` | take a decision back: withdraw its rule, re-queue the connection |
+| `undo ID\|NAME [--node N]` | take a decision back: withdraw its rule, re-queue the connection |
 | `rules [--node N] [--json]` | the rules each daemon has |
 | `rule delete\|enable\|disable NAME [--node N]` | change a rule the daemon has |
 | `nodes [--json]` | daemons that have connected, with their version |
@@ -334,12 +334,14 @@ node, `--node` says which daemon is meant; with one, it is implied.
 
 A decision is a rule, so taking it back means withdrawing the rule.
 `pending --decided` lists what was decided, with the rule each connection
-got, and `undo ID` withdraws that rule and puts the connection back in the
-queue, exactly as if it had never been answered:
+got, and `undo` withdraws that rule and puts the connection back in the
+queue, exactly as if it had never been answered. It takes the queue id from
+that list, or the rule's name from `rules` — whichever you are looking at:
 
 ```bash
 sudo opensnitch-cli pending --decided
 sudo opensnitch-cli undo 7
+sudo opensnitch-cli undo deny-always-simple-usr-bin-curl   # the same thing, by name
 sudo opensnitch-cli review           # it is back, decide again
 ```
 

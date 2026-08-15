@@ -286,10 +286,13 @@ class Database:
         One approval can settle several queued connections (review.py
         resolve_covered), and they all record the same rule.
         """
+        query = "SELECT * FROM pending WHERE state=? AND decided_rule IS NOT NULL"
+        args = [STATE_DECIDED]
+        if node is not None:
+            query += " AND node=?"
+            args.append(node)
         with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM pending WHERE node=? AND state=? AND decided_rule IS NOT NULL",
-                (node, STATE_DECIDED)).fetchall()
+            rows = self._db.execute(query, args).fetchall()
         found = []
         for row in rows:
             try:
