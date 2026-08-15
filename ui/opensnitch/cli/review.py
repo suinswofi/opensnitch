@@ -141,9 +141,10 @@ class Decision:
         ops = self.operators()
         if len(ops) == 0:
             return ""
-        data = ops[0].data
         return rules.unique_name(
-            rules.rule_name(self.action, self.duration, len(ops) > 1, data), self._taken)
+            rules.rule_name(self.action, self.duration, len(ops) > 1, ops[0].data,
+                            [op.data for op in ops[1:]]),
+            self._taken)
 
     @name.setter
     def name(self, value):

@@ -55,9 +55,20 @@ class TestPeerAddress:
         service = make_service(db, config)
         assert service.peer_addr("unix:") == "unix:/local"
 
-    def test_tcp(self, db, config):
+    def test_tcp_drops_the_ephemeral_port(self, db, config):
+        """the daemon dials from a new source port on every reconnect; if it
+        were part of the key, decisions queued while it was down would be
+        addressed to a node that never returns."""
         service = make_service(db, config)
-        assert service.peer_addr("ipv4:192.168.1.5:12345") == "ipv4:192.168.1.5:12345"
+        assert service.peer_addr("ipv4:192.168.1.5:12345") == "ipv4:192.168.1.5"
+        assert service.peer_addr("ipv4:192.168.1.5:12345") == \
+            service.peer_addr("ipv4:192.168.1.5:54321")
+
+    def test_ipv6(self, db, config):
+        service = make_service(db, config)
+        assert service.peer_addr("ipv6:[::1]:59680") == "ipv6:[::1]"
+        assert service.peer_addr("ipv6:[fe80::1%eth0]:1") == "ipv6:[fe80::1%eth0]"
+
 
 
 class TestSubscribe:

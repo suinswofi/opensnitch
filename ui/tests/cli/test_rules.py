@@ -62,6 +62,12 @@ class TestBuildRule:
         assert rules.rule_name("allow", "always", False, "/usr/bin/curl") == \
             "allow-always-simple-usr-bin-curl"
 
+    def test_a_list_rule_is_named_after_every_condition(self):
+        """also the pop-up's convention (dialogs/prompt/dialog.py _send_rule)"""
+        assert rules.rule_name("allow", "always", True, "/usr/bin/curl",
+                               ["api.github.com", "443"]) == \
+            "allow-always-list-usr-bin-curl-api-github-com-443"
+
     def test_unique_name_avoids_a_rename_by_the_daemon(self):
         taken = {"allow-always-simple-x", "allow-always-simple-x-2"}
         assert rules.unique_name("allow-always-simple-x", taken) == "allow-always-simple-x-3"

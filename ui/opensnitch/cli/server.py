@@ -226,24 +226,25 @@ class Server:
         """sends the decisions taken by 'opensnitch-cli review'.
 
         Rows for a node that isn't connected stay queued, so a decision taken
-        while the daemon is down is applied when it comes back.
+        while the daemon is down is applied when it comes back. The queue is
+        read per connected node: one query across all nodes would let a
+        disconnected node's backlog fill the batch and starve the others.
         """
         sent = 0
-        for row in self._db.queued_notifications():
-            node = self._service.get_node(row["node"])
-            if node is None or node.stop.is_set():
+        for node in self._service.nodes():
+            if node.stop.is_set():
                 continue
+            for row in self._db.queued_notifications(node=node.addr):
+                rule = ui_pb2.Rule()
+                json_format.Parse(row["rule_json"], rule)
 
-            rule = ui_pb2.Rule()
-            json_format.Parse(row["rule_json"], rule)
-
-            ntf_id = self._next_notification_id()
-            notification = ui_pb2.Notification(id=ntf_id, type=row["ntf_type"], rules=[rule])
-            self._db.mark_sent(row["id"], ntf_id)
-            node.queue.put(notification)
-            sent += 1
-            logger.info("sent %s for rule '%s' to %s",
-                        ui_pb2.Action.Name(row["ntf_type"]), rule.name, row["node"])
+                ntf_id = self._next_notification_id()
+                notification = ui_pb2.Notification(id=ntf_id, type=row["ntf_type"], rules=[rule])
+                self._db.mark_sent(row["id"], ntf_id)
+                node.queue.put(notification)
+                sent += 1
+                logger.info("sent %s for rule '%s' to %s",
+                            ui_pb2.Action.Name(row["ntf_type"]), rule.name, row["node"])
         return sent
 
     def _outbox_loop(self):

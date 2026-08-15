@@ -301,11 +301,21 @@ class Database:
                  int(time.time()), pending_id))
             return cur.lastrowid
 
-    def queued_notifications(self, limit=50):
+    def queued_notifications(self, limit=50, node=None):
+        query = "SELECT * FROM outbox WHERE state=?"
+        args = [OUT_QUEUED]
+        if node is not None:
+            query += " AND node=?"
+            args.append(node)
+        query += " ORDER BY id LIMIT ?"
+        args.append(limit)
         with self._lock:
-            return self._db.execute(
-                "SELECT * FROM outbox WHERE state=? ORDER BY id LIMIT ?",
-                (OUT_QUEUED, limit)).fetchall()
+            return self._db.execute(query, args).fetchall()
+
+    def queued_count(self):
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM outbox WHERE state=?",
+                                    (OUT_QUEUED,)).fetchone()[0]
 
     def mark_sent(self, outbox_id, ntf_id):
         with self._lock:
@@ -360,6 +370,34 @@ class Database:
             return self._db.execute(
                 "SELECT * FROM outbox WHERE state=? ORDER BY id", (OUT_ERROR,)).fetchall()
 
+    def retry_errors(self):
+        """sends the notifications the daemon rejected once more."""
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE outbox SET state=?, last_error=NULL, updated=? WHERE state=?",
+                (OUT_QUEUED, int(time.time()), OUT_ERROR))
+            return cur.rowcount
+
+    def clear_errors(self):
+        """forgets the notifications the daemon rejected.
+
+        A rejected rule was never applied, so the connection it was meant to
+        decide goes back to the review queue: the decision has to be taken
+        again, differently. Returns the number of notifications dropped.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT pending_id FROM outbox WHERE state=?", (OUT_ERROR,)).fetchall()
+            for row in rows:
+                if row["pending_id"] is None:
+                    continue
+                self._db.execute(
+                    "UPDATE pending SET state=?, decided_at=NULL, decided_rule=NULL "
+                    "WHERE id=? AND state=?",
+                    (STATE_PENDING, row["pending_id"], STATE_DECIDED))
+            self._db.execute("DELETE FROM outbox WHERE state=?", (OUT_ERROR,))
+            return len(rows)
+
     # the daemon's rules, as reported on Subscribe
 
     def replace_rules(self, node, rules):
@@ -383,9 +421,27 @@ class Database:
             return self._db.execute(query, args).fetchall()
 
     def rule_names(self, node):
+        """the names a new rule for this node must not take.
+
+        What the daemon reported when it connected, plus every rule we have
+        queued for it since: the rules table is only refreshed on Subscribe,
+        and the daemon replaces rules by name, so a name handed out in an
+        earlier review session would otherwise be handed out again and the
+        second rule would silently overwrite the first.
+        """
         with self._lock:
             rows = self._db.execute("SELECT name FROM rules WHERE node=?", (node,)).fetchall()
-        return set([r["name"] for r in rows])
+            sent = self._db.execute("SELECT rule_json FROM outbox WHERE node=?",
+                                    (node,)).fetchall()
+        names = set([r["name"] for r in rows])
+        for row in sent:
+            try:
+                name = json.loads(row["rule_json"]).get("name")
+            except (ValueError, AttributeError):
+                continue
+            if name:
+                names.add(name)
+        return names
 
     def add_alert(self, node, alert):
         with self._lock:

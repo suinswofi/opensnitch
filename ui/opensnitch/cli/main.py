@@ -216,10 +216,17 @@ def cmd_nodes(args, config):
 
 def cmd_status(args, config):
     db = open_db(config)
+
+    if args.retry:
+        print("re-sending %d rejected notification(s)" % db.retry_errors())
+    elif args.clear:
+        print("dropped %d rejected notification(s); their connections are back in "
+              "the review queue" % db.clear_errors())
+
     nodes = db.nodes()
     online = len([n for n in nodes if n["online"]])
     errors = db.outbox_errors()
-    queued = len(db.queued_notifications(limit=1000))
+    queued = db.queued_count()
 
     status = {
         "pending": db.pending_count(),
@@ -294,6 +301,12 @@ def build_parser():
 
     status = subparsers.add_parser("status", help="queue depth, nodes and failed rules")
     status.add_argument("--json", action="store_true")
+    failed = status.add_mutually_exclusive_group()
+    failed.add_argument("--retry", action="store_true",
+                        help="send the rules the daemon rejected once more")
+    failed.add_argument("--clear", action="store_true",
+                        help="forget the rules the daemon rejected and put their "
+                             "connections back in the review queue")
     status.set_defaults(func=cmd_status)
 
     return parser

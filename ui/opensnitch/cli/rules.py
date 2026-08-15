@@ -78,11 +78,20 @@ def build_rule(name, action, duration, ops, precedence=False, description="", en
     return rule
 
 
-def rule_name(action, duration, is_list, data):
-    """same naming the pop-up uses, see dialogs/prompt/utils.py get_rule_name"""
+def rule_name(action, duration, is_list, data, extra=()):
+    """same naming the pop-up uses, see dialogs/prompt/utils.py get_rule_name.
+
+    Every condition of a list rule goes into the name, as the pop-up does
+    (dialogs/prompt/dialog.py _send_rule). Rules are replaced by name on the
+    daemon, so two rules for the same program that differ only in the host
+    they allow must not end up called the same thing.
+    """
     name = slugify("%s %s" % (action, duration))
     name = "%s-%s" % (name, "list" if is_list else "simple")
-    return slugify("%s %s" % (name, data))[:128]
+    name = slugify("%s %s" % (name, data))
+    for value in extra:
+        name = slugify("%s %s" % (name, value))
+    return name[:128]
 
 
 def unique_name(name, taken):

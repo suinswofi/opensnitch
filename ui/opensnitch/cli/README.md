@@ -283,10 +283,12 @@ because the daemon lowercases it and it would never match.
 | `drop ID` | remove from the queue without creating a rule |
 | `rules [--node N] [--json]` | rules the daemon reported when it connected |
 | `nodes [--json]` | daemons that have connected |
-| `status [--json]` | queue depth, nodes, and rules the daemon rejected |
+| `status [--json] [--retry\|--clear]` | queue depth, nodes, and rules the daemon rejected |
 
 `status` exits non-zero if any rule was rejected, so it works as a monitoring
-check.
+check. `--retry` sends the rejected rules once more; `--clear` forgets them and
+puts their connections back in the review queue, so the decision can be taken
+again differently.
 
 `--match` takes an operand name, for example:
 
@@ -343,7 +345,10 @@ may connect to, so it is root-only. Use `sudo`.
 
 **A rule never took effect.** `sudo opensnitch-cli status` lists rules the daemon
 refused, with its own error message. The usual causes are a regular expression
-RE2 cannot compile and a duration Go cannot parse. If `notifications queued` is
+RE2 cannot compile and a duration Go cannot parse. A refused rule stays listed,
+and `status` keeps exiting non-zero, until you deal with it: `status --clear`
+drops it and returns the connection to the review queue so you can decide it
+again, `status --retry` sends it once more. If `notifications queued` is
 not zero, the decisions simply have not been delivered yet: `serve` was not
 running, or the daemon was not connected — `review` warns about this when it
 finishes. Nothing is lost: they go out as soon as both are back, and until then

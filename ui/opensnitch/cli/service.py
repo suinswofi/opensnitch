@@ -68,13 +68,23 @@ class Service(ui_pb2_grpc.UIServicer):
     def peer_addr(self, peer):
         """the key we store a node under.
 
-        Same shape the GUI uses (opensnitch/nodes.py get_addr): "proto:address",
-        with a placeholder for unix sockets, whose peer has no address.
+        Same shape the GUI uses (opensnitch/nodes.py get_addr): "proto:host",
+        with a placeholder for unix sockets, whose peer has no address. The
+        port is dropped on purpose: over TCP the peer is the daemon's ephemeral
+        source port, which changes every time it reconnects, and the outbox is
+        keyed by this value — keeping the port would leave every decision taken
+        while the daemon was down addressed to a node that never comes back.
         """
         proto, _, addr = peer.partition(":")
         if proto.startswith("unix"):
             return "%s:%s" % (proto, addr if addr != "" else "/local")
-        return "%s:%s" % (proto, addr)
+        if addr.startswith("["):
+            # ipv6:[::1]:59680
+            host = addr[:addr.find("]") + 1] if "]" in addr else addr
+        else:
+            # ipv4:192.168.1.5:41000
+            host = addr.rsplit(":", 1)[0] if ":" in addr else addr
+        return "%s:%s" % (proto, host)
 
     def get_node(self, addr):
         with self._lock:

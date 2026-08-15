@@ -220,6 +220,40 @@ class TestCoveredEntries:
         assert len(names) == 2
         assert len(set(names)) == 2, "both rules got the name %s" % names[0]
 
+    def test_a_list_rule_is_named_after_all_of_its_conditions(self, db, config):
+        """as the pop-up does: the host is part of the name, so two rules that
+        allow the same program to different hosts don't collide to begin with."""
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+
+        review.review_loop(db, db.pending(), config,
+                           read=scripted(["e", "5", "2", "a"]), write=silent)
+
+        (name,) = [rule["name"] for t, rule in sent_rules(db) if t == ui_pb2.CHANGE_RULE]
+        assert name == "allow-always-list-usr-lib-apt-methods-http-archive-ubuntu-com"
+
+    def test_two_rules_in_different_sessions_cannot_share_a_name(self, db, config):
+        """the daemon replaces rules by name, and only tells us its rule names
+        when it connects. A name handed out by an earlier review must not be
+        handed out again by a later one, or the first rule is silently lost."""
+        self._queue_for(db, "sig0", "archive.ubuntu.com")
+        self._queue_for(db, "sig1", "security.ubuntu.com")
+        first, second = db.pending()
+
+        # two separate review runs, each starting from db.rule_names, and each
+        # narrowing to the same *custom* pattern so the names would otherwise
+        # be identical
+        for entry in (first, second):
+            con = review.entry_connection(entry)
+            decision = review.Decision(entry, con, "allow", "always",
+                                       db.rule_names(entry["node"]))
+            decision.extra = [{"label": "custom", "type": "regexp",
+                               "operand": "dest.host", "data": r".*\.ubuntu\.com$"}]
+            review.apply_decision(db, entry, decision.build())
+
+        names = [rule["name"] for t, rule in sent_rules(db) if t == ui_pb2.CHANGE_RULE]
+        assert len(names) == 2
+        assert len(set(names)) == 2, "both rules got the name %s" % names[0]
+
 
 class TestEditing:
 

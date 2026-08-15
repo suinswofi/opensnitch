@@ -185,6 +185,26 @@ class TestOverARealSocket:
         assert got[1].rules[0].name == "allow-always-simple-github"
         assert got[1].rules[0].operator.data == r"^(|.*\.)github\.com$"
 
+    def test_a_disconnected_nodes_backlog_does_not_starve_the_others(self, running):
+        """decisions for a node that is down stay queued; they must not stop
+        the decisions for a node that is up from going out."""
+        server, daemon = running
+        daemon.subscribe()
+        daemon.open_notifications()
+
+        for i in range(60):
+            server.db.queue_notification(
+                "ipv4:10.0.0.9", ui_pb2.CHANGE_RULE,
+                json_format.MessageToJson(ui_pb2.Rule(name="down-%d" % i)))
+        server.db.queue_notification(
+            "unix:/local", ui_pb2.CHANGE_RULE,
+            json_format.MessageToJson(ui_pb2.Rule(name="up")))
+
+        assert server.drain_outbox() == 1
+        got = daemon.wait_for(1)
+        assert [n.rules[0].name for n in got] == ["up"]
+        assert server.db.queued_count() == 60
+
     def test_the_daemons_answer_is_recorded(self, running):
         server, daemon = running
         daemon.subscribe()

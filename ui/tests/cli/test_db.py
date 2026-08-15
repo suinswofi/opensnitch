@@ -93,6 +93,45 @@ class TestOutbox:
         db.queue_notification("n", 10, '{"name":"r"}')
         assert len(db.queued_notifications()) == 1
 
+    def test_the_queue_can_be_read_per_node(self, db):
+        for i in range(60):
+            db.queue_notification("dead", 10, "{}")
+        db.queue_notification("live", 10, '{"name":"r"}')
+
+        assert len(db.queued_notifications(node="live")) == 1
+        assert db.queued_count() == 61
+
+    def test_a_rejected_rule_can_be_sent_again(self, db):
+        outbox_id = db.queue_notification("n", 10, "{}")
+        db.mark_sent(outbox_id, 558)
+        db.mark_result(558, False, "invalid regexp")
+
+        assert db.retry_errors() == 1
+        row = db.get_outbox(outbox_id)
+        assert row["state"] == dbmod.OUT_QUEUED
+        assert row["last_error"] is None
+
+    def test_clearing_a_rejected_rule_reopens_its_queue_entry(self, db, connection):
+        """the decision never took, so it has to be taken again."""
+        entry_id, _ = db.record_pending("n", "sig", connection, {})
+        db.set_pending_state(entry_id, dbmod.STATE_DECIDED, '{"name":"bad"}')
+        outbox_id = db.queue_notification("n", 10, '{"name":"bad"}', pending_id=entry_id)
+        db.mark_sent(outbox_id, 559)
+        db.mark_result(559, False, "invalid regexp")
+
+        assert db.clear_errors() == 1
+        assert db.outbox_errors() == []
+        assert db.get_pending(entry_id)["state"] == dbmod.STATE_PENDING
+        assert db.get_pending(entry_id)["decided_rule"] is None
+
+    def test_names_handed_out_earlier_are_taken(self, db):
+        """the rules table only knows what the daemon reported on connecting;
+        what we sent since must not be handed out again."""
+        db.queue_notification("n", 10, '{"name":"allow-always-list-usr-bin-curl"}')
+        assert "allow-always-list-usr-bin-curl" in db.rule_names("n")
+        assert "allow-always-list-usr-bin-curl" not in db.rule_names("other")
+
+
 
 class TestConcurrentAccess:
 
