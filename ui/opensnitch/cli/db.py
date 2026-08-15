@@ -280,6 +280,33 @@ class Database:
                 "UPDATE pending SET state=?, decided_at=?, decided_rule=? WHERE id=?",
                 (state, int(time.time()), rule_json, entry_id))
 
+    def decided_by(self, node, rule_name):
+        """the decided entries a rule of that name settled on a node.
+
+        One approval can settle several queued connections (review.py
+        resolve_covered), and they all record the same rule.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM pending WHERE node=? AND state=? AND decided_rule IS NOT NULL",
+                (node, STATE_DECIDED)).fetchall()
+        found = []
+        for row in rows:
+            try:
+                if json.loads(row["decided_rule"]).get("name") == rule_name:
+                    found.append(row)
+            except (ValueError, AttributeError):
+                continue
+        return found
+
+    def reopen(self, entry_ids):
+        """puts decided entries back in the queue, as if never answered."""
+        with self._lock:
+            for entry_id in entry_ids:
+                self._db.execute(
+                    "UPDATE pending SET state=?, decided_at=NULL, decided_rule=NULL WHERE id=?",
+                    (STATE_PENDING, entry_id))
+
     def expire_provisionals(self):
         """clears the provisional rule of entries whose temporary rule has gone.
 

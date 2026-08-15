@@ -136,6 +136,61 @@ class TestRule:
         assert "no node has connected" in capsys.readouterr().err
 
 
+class TestUndo:
+
+    def _decide(self, db, connection, node="unix:/local", sig="sig", rule_name="deny-always-simple-usr-bin-curl"):
+        entry_id, _ = db.record_pending(node, sig, connection, {})
+        db.set_pending_state(entry_id, dbmod.STATE_DECIDED,
+                             json.dumps({"name": rule_name, "action": "deny",
+                                         "duration": "always"}))
+        return entry_id
+
+    def test_a_denied_connection_comes_back_and_its_rule_is_withdrawn(self, db, config,
+                                                                      connection, capsys):
+        entry_id = self._decide(db, connection)
+
+        assert run(["undo", str(entry_id)], config) == 0
+
+        entry = db.get_pending(entry_id)
+        assert entry["state"] == dbmod.STATE_PENDING
+        assert entry["decided_rule"] is None
+        [(ntf_type, rule)] = queued(db)
+        assert ntf_type == ui_pb2.DELETE_RULE
+        assert rule["name"] == "deny-always-simple-usr-bin-curl"
+        assert "1 connection(s) back" in capsys.readouterr().out
+
+    def test_every_connection_the_rule_settled_comes_back(self, db, config, connection, capsys):
+        """one approval can settle several entries; undoing it reopens them all,
+        since the rule that answered them is going away."""
+        first = self._decide(db, connection, sig="a")
+        second = self._decide(db, connection, sig="b")
+        other_rule = self._decide(db, connection, sig="c", rule_name="allow-always-simple-x")
+
+        assert run(["undo", str(first)], config) == 0
+
+        assert db.get_pending(first)["state"] == dbmod.STATE_PENDING
+        assert db.get_pending(second)["state"] == dbmod.STATE_PENDING
+        assert db.get_pending(other_rule)["state"] == dbmod.STATE_DECIDED
+        assert len(queued(db)) == 1, "one rule, one delete"
+        assert "2 connection(s) back" in capsys.readouterr().out
+
+    def test_only_a_decided_entry_can_be_undone(self, db, config, connection, capsys):
+        entry_id, _ = db.record_pending("unix:/local", "sig", connection, {})
+        assert run(["undo", str(entry_id)], config) == 1
+        assert "no decision to undo" in capsys.readouterr().err
+        assert run(["undo", "999"], config) == 1
+
+    def test_pending_decided_lists_what_was_decided(self, db, config, connection, capsys):
+        entry_id = self._decide(db, connection)
+        assert run(["pending", "--decided"], config) == 0
+        out = capsys.readouterr().out
+        assert "DECISION" in out
+        assert "deny always as deny-always-simple-usr-bin-curl" in out
+
+        assert run(["pending"], config) == 0
+        assert "nothing waiting" in capsys.readouterr().out
+
+
 class TestNodes:
 
     def test_online_means_heard_from_recently(self, db, config, capsys):

@@ -77,21 +77,89 @@ def _entry_summary(entry):
         "%sx" % entry["hits"])
 
 
+def _decision_summary(entry):
+    """what was decided for an entry: 'allow always as NAME'."""
+    try:
+        rule = json.loads(entry["decided_rule"] or "{}")
+    except ValueError:
+        rule = {}
+    if not rule:
+        return "?"
+    return "%s %s as %s" % (rule.get("action", "?"), rule.get("duration", "?"),
+                            rule.get("name", "?"))
+
+
 def cmd_pending(args, config):
+    from opensnitch.cli import db as dbmod
+
     db = open_db(config)
-    entries = db.pending(node=args.node, limit=args.limit)
+    state = dbmod.STATE_DECIDED if args.decided else dbmod.STATE_PENDING
+    entries = db.pending(node=args.node, limit=args.limit, state=state)
 
     if args.json:
         print(json.dumps([dict(e) for e in entries], indent=2))
         return 0
 
     if len(entries) == 0:
-        print("nothing waiting to be reviewed")
+        print("nothing has been decided yet" if args.decided else "nothing waiting to be reviewed")
+        return 0
+
+    if args.decided:
+        print("%-5s %-28s %-38s %s" % ("ID", "PROCESS", "DESTINATION", "DECISION"))
+        for entry in entries:
+            destination = entry["dst_host"] or entry["dst_ip"] or "?"
+            print("%-5s %-28s %-38s %s" % (
+                entry["id"], (entry["process_path"] or "?")[-28:],
+                "%s:%s" % (destination, entry["dst_port"]), _decision_summary(entry)))
         return 0
 
     print("%-5s %-28s %-38s %s" % ("ID", "PROCESS", "DESTINATION", "SEEN"))
     for entry in entries:
         print(_entry_summary(entry))
+    return 0
+
+
+def cmd_undo(args, config):
+    """takes back a decision: withdraws its rule, reopens the queue entry."""
+    from google.protobuf import json_format
+    from opensnitch.cli.proto import ui_pb2
+    from opensnitch.cli import db as dbmod
+
+    db = open_db(config)
+    entry = db.get_pending(args.id)
+    if entry is None:
+        print("opensnitch-cli: no queue entry with id %s" % args.id, file=sys.stderr)
+        return 1
+    if entry["state"] != dbmod.STATE_DECIDED:
+        print("opensnitch-cli: entry %s is %s, there is no decision to undo" % (
+            args.id, entry["state"]), file=sys.stderr)
+        return 1
+
+    try:
+        rule_name = json.loads(entry["decided_rule"] or "{}").get("name")
+    except ValueError:
+        rule_name = None
+    if not rule_name:
+        print("opensnitch-cli: entry %s does not say which rule decided it" % args.id,
+              file=sys.stderr)
+        return 1
+
+    # the same rule may have settled other queued connections; they all come
+    # back, since the rule that answered them is going away
+    covered = db.decided_by(entry["node"], rule_name)
+    stale = ui_pb2.Rule(name=rule_name)
+    stale.operator.type = RuleConsts.RULE_TYPE_SIMPLE
+    stale.operator.operand = "true"
+    db.queue_notification(entry["node"], ui_pb2.DELETE_RULE, json_format.MessageToJson(stale),
+                          pending_id=entry["id"])
+    db.reopen([e["id"] for e in covered])
+
+    print("queued: delete rule '%s'; %d connection(s) back in the review queue" % (
+        rule_name, len(covered)))
+    for other in covered:
+        destination = other["dst_host"] or other["dst_ip"] or "?"
+        print("  %s  %s -> %s:%s" % (other["id"], other["process_path"] or "(unknown process)",
+                                     destination, other["dst_port"]))
     return 0
 
 
@@ -413,7 +481,14 @@ def build_parser():
     pending.add_argument("--node")
     pending.add_argument("--limit", type=int)
     pending.add_argument("--json", action="store_true")
+    pending.add_argument("--decided", action="store_true",
+                         help="list what has been decided instead, with the rule each got")
     pending.set_defaults(func=cmd_pending)
+
+    undo = add_command("undo", help="take a decision back: withdraw its rule, re-queue "
+                                    "the connection")
+    undo.add_argument("id", type=int)
+    undo.set_defaults(func=cmd_undo)
 
     review_cmd = add_command("review", help="go through the queue one by one")
     review_cmd.add_argument("--node")

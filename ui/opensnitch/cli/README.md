@@ -286,10 +286,11 @@ because the daemon lowercases it and it would never match.
 | --- | --- |
 | `serve` | answer the daemon and record connections |
 | `review` | go through the queue one at a time |
-| `pending [--json] [--node N] [--limit N]` | list what is waiting |
+| `pending [--json] [--node N] [--limit N] [--decided]` | list what is waiting, or what was decided |
 | `allow ID [--match OPERAND] [--duration D] [--name N]` | approve without prompting |
 | `deny ID` / `reject ID` | refuse without prompting |
 | `drop ID` | remove from the queue without creating a rule |
+| `undo ID` | take a decision back: withdraw its rule, re-queue the connection |
 | `rules [--node N] [--json]` | the rules each daemon has |
 | `rule delete\|enable\|disable NAME [--node N]` | change a rule the daemon has |
 | `nodes [--json]` | daemons that have connected, with their version |
@@ -328,6 +329,23 @@ step with every change the daemon confirms, so it stays accurate while `serve`
 runs. It does not see rules that expire on the daemon on their own, or that
 were edited on disk by hand, until the daemon reconnects. With more than one
 node, `--node` says which daemon is meant; with one, it is implied.
+
+## Changing your mind
+
+A decision is a rule, so taking it back means withdrawing the rule.
+`pending --decided` lists what was decided, with the rule each connection
+got, and `undo ID` withdraws that rule and puts the connection back in the
+queue, exactly as if it had never been answered:
+
+```bash
+sudo opensnitch-cli pending --decided
+sudo opensnitch-cli undo 7
+sudo opensnitch-cli review           # it is back, decide again
+```
+
+If one approval settled several queued connections (see "Approve it" above),
+undoing any of them brings all of them back, since the one rule that answered
+them is going away.
 
 A name given by hand — `allow ... --name`, or `4` in the editor — is refused if
 a rule of that name exists, because the daemon would replace it without a word.
