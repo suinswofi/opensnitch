@@ -375,60 +375,79 @@ def cmd_status(args, config):
     return 1 if len(errors) > 0 else 0
 
 
+def _add_common_options(parser, default):
+    """--config, --db and --log-level.
+
+    Added to the main parser and to every subcommand, so that both
+    'opensnitch-cli --log-level debug serve' and 'opensnitch-cli serve
+    --log-level debug' work. On the subcommands the default is SUPPRESS: a
+    subparser's default would otherwise overwrite a value given before the
+    subcommand.
+    """
+    parser.add_argument("--config", default=default, help="path to cli.conf")
+    parser.add_argument("--db", default=default,
+                        help="path to the queue database, overrides the config file")
+    parser.add_argument("--log-level", default=default,
+                        choices=("debug", "info", "warning", "error"))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="opensnitch-cli",
         description="Review and answer OpenSnitch connection prompts from a terminal.")
     parser.add_argument("--version", action="version", version="opensnitch-cli %s" % version)
-    parser.add_argument("--config", help="path to cli.conf")
-    parser.add_argument("--db", help="path to the queue database, overrides the config file")
-    parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"))
+    _add_common_options(parser, default=None)
 
     subparsers = parser.add_subparsers(dest="command")
 
-    serve = subparsers.add_parser("serve", help="answer the daemon and record connections")
+    def add_command(name, **kwargs):
+        sub = subparsers.add_parser(name, **kwargs)
+        _add_common_options(sub, default=argparse.SUPPRESS)
+        return sub
+
+    serve = add_command("serve", help="answer the daemon and record connections")
     serve.add_argument("--socket", help="address to listen on, overrides the config file")
     serve.set_defaults(func=cmd_serve)
 
-    pending = subparsers.add_parser("pending", help="list connections waiting to be reviewed")
+    pending = add_command("pending", help="list connections waiting to be reviewed")
     pending.add_argument("--node")
     pending.add_argument("--limit", type=int)
     pending.add_argument("--json", action="store_true")
     pending.set_defaults(func=cmd_pending)
 
-    review_cmd = subparsers.add_parser("review", help="go through the queue one by one")
+    review_cmd = add_command("review", help="go through the queue one by one")
     review_cmd.add_argument("--node")
     review_cmd.add_argument("--limit", type=int)
     review_cmd.set_defaults(func=cmd_review)
 
     for action in (RuleConsts.ACTION_ALLOW, RuleConsts.ACTION_DENY, RuleConsts.ACTION_REJECT):
-        decide = subparsers.add_parser(action, help="%s a queue entry without prompting" % action)
+        decide = add_command(action, help="%s a queue entry without prompting" % action)
         decide.add_argument("id", type=int)
         decide.add_argument("--match", help="operand to match on, for example dest.host")
         decide.add_argument("--duration", default=RuleConsts.DURATION_ALWAYS)
         decide.add_argument("--name")
         decide.set_defaults(func=cmd_decide, action=action)
 
-    drop = subparsers.add_parser("drop", help="remove a queue entry without creating a rule")
+    drop = add_command("drop", help="remove a queue entry without creating a rule")
     drop.add_argument("id", type=int)
     drop.set_defaults(func=cmd_drop)
 
-    rules_cmd = subparsers.add_parser("rules", help="the rules each daemon has")
+    rules_cmd = add_command("rules", help="the rules each daemon has")
     rules_cmd.add_argument("--node")
     rules_cmd.add_argument("--json", action="store_true")
     rules_cmd.set_defaults(func=cmd_rules)
 
-    rule_cmd = subparsers.add_parser("rule", help="delete, enable or disable a rule by name")
+    rule_cmd = add_command("rule", help="delete, enable or disable a rule by name")
     rule_cmd.add_argument("verb", choices=("delete", "enable", "disable"))
     rule_cmd.add_argument("name")
     rule_cmd.add_argument("--node", help="which daemon, when more than one has connected")
     rule_cmd.set_defaults(func=cmd_rule)
 
-    nodes = subparsers.add_parser("nodes", help="daemons that have connected")
+    nodes = add_command("nodes", help="daemons that have connected")
     nodes.add_argument("--json", action="store_true")
     nodes.set_defaults(func=cmd_nodes)
 
-    status = subparsers.add_parser("status", help="queue depth, nodes and failed rules")
+    status = add_command("status", help="queue depth, nodes and failed rules")
     status.add_argument("--json", action="store_true")
     failed = status.add_mutually_exclusive_group()
     failed.add_argument("--retry", action="store_true",

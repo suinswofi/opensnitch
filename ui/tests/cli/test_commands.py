@@ -33,6 +33,23 @@ def queued(db):
             for row in db.queued_notifications()]
 
 
+class TestParser:
+
+    def test_common_options_work_on_either_side_of_the_command(self):
+        """'serve --log-level debug' is what people type; it must not be an
+        error just because --log-level is defined on the main parser."""
+        parser = main.build_parser()
+        assert parser.parse_args(["--log-level", "debug", "serve"]).log_level == "debug"
+        assert parser.parse_args(["serve", "--log-level", "debug"]).log_level == "debug"
+
+    def test_a_value_given_before_the_command_survives(self):
+        """a subparser's default must not overwrite the main parser's value."""
+        parser = main.build_parser()
+        args = parser.parse_args(["--db", "/tmp/x.db", "status", "--json"])
+        assert args.db == "/tmp/x.db"
+        assert args.log_level is None
+
+
 class TestRule:
 
     def test_delete_queues_a_delete_for_the_daemon(self, db, config, capsys):
