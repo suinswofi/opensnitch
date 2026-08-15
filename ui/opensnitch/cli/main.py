@@ -147,7 +147,14 @@ def cmd_undo(args, config):
             return 1
         node = entry["node"]
     else:
-        rule_name = args.what
+        known = db.decided_rule_names()
+        for n in db.nodes():
+            known |= db.rule_names(n["addr"])
+        try:
+            rule_name = resolve_rule_name(args.what, known)
+        except CommandError as e:
+            print("opensnitch-cli: %s" % e, file=sys.stderr)
+            return 1
         # a rule name is only unique on one node; the entries it decided say
         # which, otherwise --node has to
         nodes = sorted(set(e["node"] for e in db.decided_by(None, rule_name)))
@@ -338,12 +345,32 @@ def cmd_rules(args, config):
     if len(entries) == 0:
         print("no rules known. They are read from each node when it connects.")
         return 0
-    print("%-8s %-44s %-7s %-14s %s" % ("ENABLED", "NAME", "ACTION", "DURATION", "MATCH"))
+    # the name is how a rule is deleted or undone, so it is never cut short:
+    # the column is as wide as the longest one
+    width = max([len(rule["name"]) for rule in entries] + [4])
+    print("%-8s %-*s %-7s %-14s %s" % ("ENABLED", width, "NAME", "ACTION", "DURATION", "MATCH"))
     for rule in entries:
-        print("%-8s %-44s %-7s %-14s %s" % (
-            "yes" if rule["enabled"] else "no", rule["name"][:44], rule["action"],
+        print("%-8s %-*s %-7s %-14s %s" % (
+            "yes" if rule["enabled"] else "no", width, rule["name"], rule["action"],
             rule["duration"], _rule_match_summary(rule)))
     return 0
+
+
+def resolve_rule_name(given, known):
+    """the rule meant by a name typed on the command line.
+
+    An exact name wins. Otherwise a prefix that fits exactly one known rule
+    is enough — the generated names are long, and cutting one short is what
+    people naturally do. A prefix that fits several is refused, listing them.
+    """
+    if given in known:
+        return given
+    matches = sorted(n for n in known if n.startswith(given))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise CommandError("'%s' could be any of: %s" % (given, ", ".join(matches)))
+    return given
 
 
 def cmd_rule(args, config):
@@ -355,6 +382,7 @@ def cmd_rule(args, config):
     db = open_db(config)
     try:
         node = resolve_node(db, args.node)
+        args.name = resolve_rule_name(args.name, db.rule_names(node))
     except CommandError as e:
         print("opensnitch-cli: %s" % e, file=sys.stderr)
         return 1

@@ -302,6 +302,22 @@ class Database:
                 continue
         return found
 
+    def decided_rule_names(self):
+        """every rule name a decision has recorded, on any node."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT decided_rule FROM pending WHERE state=? AND decided_rule IS NOT NULL",
+                (STATE_DECIDED,)).fetchall()
+        names = set()
+        for row in rows:
+            try:
+                name = json.loads(row["decided_rule"]).get("name")
+            except (ValueError, AttributeError):
+                continue
+            if name:
+                names.add(name)
+        return names
+
     def reopen(self, entry_ids):
         """puts decided entries back in the queue, as if never answered."""
         with self._lock:

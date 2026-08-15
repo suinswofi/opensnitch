@@ -64,6 +64,26 @@ class TestRule:
         # the daemon refuses a rule without an operator, even to delete it
         assert rule["operator"]["operand"] == "true"
 
+    def test_a_unique_prefix_of_the_name_is_enough(self, db, config):
+        db.node_seen("unix:/local", "h", "1.9.0")
+        db.replace_rules("unix:/local", [a_rule("allow-always-simple-usr-bin-curl")])
+
+        assert run(["rule", "delete", "allow-always-simple-usr"], config) == 0
+
+        [(ntf_type, rule)] = queued(db)
+        assert ntf_type == ui_pb2.DELETE_RULE
+        assert rule["name"] == "allow-always-simple-usr-bin-curl"
+
+    def test_the_full_name_is_shown_however_long(self, db, config, capsys):
+        """the name is how a rule is deleted; a cut-short one cannot be pasted."""
+        name = "allow-always-list-usr-lib-x86-64-linux-gnu-some-very-long-binary-name-" \
+               "api-example-com-443"
+        db.node_seen("unix:/local", "h", "1.9.0")
+        db.replace_rules("unix:/local", [a_rule(name)])
+
+        assert run(["rules"], config) == 0
+        assert name in capsys.readouterr().out
+
     def test_disable_sends_the_whole_rule_back(self, db, config):
         """a name alone would make the daemon replace the rule with an empty
         one (notifications.go handleActionEnableRule): the real rule has to
@@ -184,6 +204,25 @@ class TestUndo:
         [(ntf_type, rule)] = queued(db)
         assert ntf_type == ui_pb2.DELETE_RULE
         assert rule["name"] == "deny-always-simple-usr-bin-curl"
+
+    def test_a_unique_prefix_of_the_name_is_enough(self, db, config, connection):
+        entry_id = self._decide(db, connection)
+
+        assert run(["undo", "deny-always-simple-usr"], config) == 0
+
+        assert db.get_pending(entry_id)["state"] == dbmod.STATE_PENDING
+        [(_, rule)] = queued(db)
+        assert rule["name"] == "deny-always-simple-usr-bin-curl"
+
+    def test_an_ambiguous_prefix_is_refused_with_the_choices(self, db, config, connection, capsys):
+        self._decide(db, connection, sig="a", rule_name="deny-always-simple-usr-bin-curl")
+        self._decide(db, connection, sig="b", rule_name="deny-always-simple-usr-bin-wget")
+
+        assert run(["undo", "deny-always-simple-usr"], config) == 1
+        err = capsys.readouterr().err
+        assert "could be any of" in err
+        assert "usr-bin-curl" in err and "usr-bin-wget" in err
+        assert queued(db) == []
 
     def test_a_name_no_entry_recorded_still_withdraws_the_rule(self, db, config, capsys):
         """the daemon asks again next time, so nothing to re-queue by hand."""

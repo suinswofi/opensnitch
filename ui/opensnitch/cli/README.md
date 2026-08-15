@@ -342,8 +342,12 @@ that list, or the rule's name from `rules` — whichever you are looking at:
 sudo opensnitch-cli pending --decided
 sudo opensnitch-cli undo 7
 sudo opensnitch-cli undo deny-always-simple-usr-bin-curl   # the same thing, by name
+sudo opensnitch-cli undo deny-always-simple-usr             # a prefix will do, if only one rule fits
 sudo opensnitch-cli review           # it is back, decide again
 ```
+
+`rule delete|enable|disable` take a prefix the same way. One that fits several
+rules is refused and the choices listed.
 
 If one approval settled several queued connections (see "Approve it" above),
 undoing any of them brings all of them back, since the one rule that answered
