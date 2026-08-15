@@ -12,6 +12,9 @@ RestartSec=10
 # /var/lib/opensnitch, 0700. The queue decides what this machine is allowed to
 # connect to, so it must not be readable by everyone.
 StateDirectory=opensnitch
+# /var/log/opensnitch, the only place ProtectSystem=strict below lets a
+# log.file in cli.conf be written
+LogsDirectory=opensnitch
 
 # The default socket is /tmp/osui.sock, and a private /tmp would hide it from
 # the daemon. Point server.address at /run/opensnitch/cli.sock in cli.conf,

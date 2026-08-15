@@ -43,12 +43,6 @@ HELP = """
 """
 
 
-def _fmt_age(timestamp):
-    if not timestamp:
-        return "?"
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-
-
 def _args_of(entry):
     try:
         return json.loads(entry["process_args"] or "[]")
@@ -150,6 +144,14 @@ class Decision:
     def name(self, value):
         self._custom_name = value
 
+    def name_is_taken(self, value):
+        """whether a name the user typed would replace a rule that exists.
+
+        Generated names avoid this by themselves; a typed one has to be
+        checked, because the daemon replaces rules by name without a word.
+        """
+        return value in self._taken
+
     def build(self):
         ops = self.operators()
         if len(ops) == 0:
@@ -181,7 +183,8 @@ def render_entry(entry, con, index, total, write):
     write(SEPARATOR)
     write("[%d/%d]  %s   seen %sx   first %s   last %s" % (
         index, total, entry["node"], entry["hits"],
-        _fmt_age(entry["first_seen"]), _fmt_age(entry["last_seen"])))
+        durations.format_time(entry["first_seen"]),
+        durations.format_time(entry["last_seen"])))
 
     process = entry["process_path"] or "(unknown process)"
     write("  %s   pid %s  uid %s" % (process, entry["process_id"], entry["user_id"]))
@@ -274,7 +277,13 @@ def edit_menu(decision, read, write):
             _choose_duration(decision, read, write)
         elif choice == "4":
             value = read("  rule name: ").strip()
-            if value != "":
+            if value == "":
+                pass
+            elif decision.name_is_taken(value):
+                write("  a rule named '%s' already exists on this node and would be "
+                      "replaced; pick another name, or delete it first with "
+                      "'opensnitch-cli rule delete %s'" % (value, value))
+            else:
                 decision.name = value
         elif choice == "5":
             _choose_extra(decision, read, write)

@@ -74,6 +74,8 @@ retention_days = 30
 
 [log]
 level = info
-# empty logs to stderr, which is what the systemd unit wants
+# empty logs to stderr, which is what the systemd unit wants. Under the unit
+# the file system is read-only apart from a few directories; a log file has
+# to live under /var/log/opensnitch (LogsDirectory= in the unit).
 file =
 store_alerts = false

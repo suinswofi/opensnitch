@@ -29,6 +29,9 @@ import queue
 import threading
 import time
 
+from packaging.version import Version, InvalidVersion
+
+from opensnitch.version import version as client_version
 from opensnitch.cli.proto import ui_pb2, ui_pb2_grpc
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,32 @@ logger = logging.getLogger(__name__)
 # put on a node's queue to close its notifications stream. The daemon ends the
 # stream for any notification type <= NONE (daemon/ui/notifications.go).
 CLOSE_STREAM = -1
+
+# The notification types were renumbered in 1.6.0 (proto/ui.proto enum Action).
+# An older daemon does not reject what we send, it misreads it: our CHANGE_RULE
+# is its MONITOR_PROCESS and our DELETE_RULE is its STOP, so every decision
+# would be silently thrown away while we record it as delivered.
+MIN_DAEMON_VERSION = "1.6.0"
+
+
+def version_warning(daemon_version):
+    """what to tell the operator about a daemon's version, or None."""
+    try:
+        theirs = Version(daemon_version)
+    except InvalidVersion:
+        return None
+    if theirs < Version(MIN_DAEMON_VERSION):
+        return ("daemon version {0} is older than {1}: it will misread the rules this "
+                "client sends and none of your decisions will take effect. Upgrade the "
+                "daemon.".format(daemon_version, MIN_DAEMON_VERSION))
+    try:
+        if theirs != Version(client_version):
+            return ("daemon version {0} differs from this client's {1}; the two are "
+                    "expected to interoperate, but keep them in step if something "
+                    "looks off".format(daemon_version, client_version))
+    except InvalidVersion:
+        pass
+    return None
 
 
 class Node:
@@ -155,8 +184,11 @@ class Service(ui_pb2_grpc.UIServicer):
         self._db.node_seen(addr, node_config.name, node_config.version, online=True)
         self._db.replace_rules(addr, node_config.rules)
 
-        logger.info("node connected: %s (%s), %d rules", addr, node_config.name,
-                    len(node_config.rules))
+        logger.info("node connected: %s (%s, daemon %s), %d rules", addr, node_config.name,
+                    node_config.version, len(node_config.rules))
+        warning = version_warning(node_config.version)
+        if warning is not None:
+            logger.warning("%s: %s", addr, warning)
         return self._with_default_action(node_config)
 
     def _with_default_action(self, node_config):

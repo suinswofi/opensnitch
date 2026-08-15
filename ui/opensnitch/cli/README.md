@@ -132,6 +132,15 @@ You should see it listening, and then the daemon's log
 sudo opensnitch-cli nodes
 ```
 
+```
+ADDRESS                  HOSTNAME           DAEMON    ONLINE  LAST SEEN
+unix:/local              server1            1.9.0     yes     2026-08-14 20:17:05
+```
+
+`ONLINE` means `serve` has heard from the daemon in the last minute and a half,
+not merely that it connected once. `DAEMON` must be 1.6.0 or later, see
+"When something is wrong".
+
 **2. Make a connection that has no rule yet.**
 
 ```bash
@@ -283,7 +292,7 @@ because the daemon lowercases it and it would never match.
 | `drop ID` | remove from the queue without creating a rule |
 | `rules [--node N] [--json]` | the rules each daemon has |
 | `rule delete\|enable\|disable NAME [--node N]` | change a rule the daemon has |
-| `nodes [--json]` | daemons that have connected |
+| `nodes [--json]` | daemons that have connected, with their version |
 | `status [--json] [--retry\|--clear]` | queue depth, nodes, and rules the daemon rejected |
 
 `status` exits non-zero if any rule was rejected, so it works as a monitoring
@@ -319,6 +328,10 @@ step with every change the daemon confirms, so it stays accurate while `serve`
 runs. It does not see rules that expire on the daemon on their own, or that
 were edited on disk by hand, until the daemon reconnects. With more than one
 node, `--node` says which daemon is meant; with one, it is implied.
+
+A name given by hand — `allow ... --name`, or `4` in the editor — is refused if
+a rule of that name exists, because the daemon would replace it without a word.
+Delete the old one first if that is what you mean.
 
 ## Configuration
 
@@ -363,6 +376,13 @@ daemon is looking at a different `/tmp`.
 
 **`could not listen on ...`** — something already owns that socket, almost always
 `opensnitch-ui`. Only one client per daemon.
+
+**`daemon version X is older than 1.6.0`** in the `serve` log. The notification
+types were renumbered in daemon 1.6.0, and an older daemon does not refuse what
+this client sends — it misreads it, so every decision would be thrown away
+while `status` reports it delivered. Distribution packages can be that old
+(Ubuntu 24.04 ships 1.5.8). Upgrade the daemon; `nodes` shows each daemon's
+version.
 
 **`Permission denied` opening the database.** The queue decides what the machine
 may connect to, so it is root-only. Use `sudo`.

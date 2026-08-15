@@ -15,7 +15,7 @@
 #   You should have received a copy of the GNU General Public License
 #   along with OpenSnitch.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Rule durations, as the daemon understands them.
+"""Rule durations as the daemon understands them, and times for people to read.
 
 Anything that is not one of the three keywords is parsed by the daemon with
 Go's time.ParseDuration (daemon/rule/loader.go, scheduleTemporaryRule), which
@@ -28,6 +28,7 @@ under opensnitch.utils) and it treats "1d" as 60 hours, so it isn't reused here.
 """
 
 import re
+import time
 
 from opensnitch.rule_consts import RuleConsts
 
@@ -53,6 +54,13 @@ _UNITS = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h":
 # same grammar as Go's time.ParseDuration, without the sign
 _GO_DURATION = re.compile(r'^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$')
 _GO_PART = re.compile(r'([0-9]+(?:\.[0-9]+)?)(ns|us|µs|ms|s|m|h)')
+
+
+def format_time(timestamp):
+    """a stored epoch as local time, for the tables and the review loop."""
+    if not timestamp:
+        return "?"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
 
 def validate(duration):

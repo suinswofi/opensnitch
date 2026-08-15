@@ -29,6 +29,7 @@ import time
 
 from opensnitch.version import version
 from opensnitch.rule_consts import RuleConsts
+from opensnitch.cli import durations
 from opensnitch.cli.config import Config, ConfigError
 
 LOG_FORMAT = '%(asctime)s - [%(levelname)s][%(filename)s:%(lineno)d] %(message)s'
@@ -110,7 +111,7 @@ def cmd_review(args, config):
         applied = 0
 
     if applied:
-        if len(_served_nodes(db)) > 0:
+        if len(served_nodes(db)) > 0:
             print("\n%d rule(s) queued. The service applies them within a second; "
                   "run 'opensnitch-cli status' to check." % applied)
         else:
@@ -120,17 +121,26 @@ def cmd_review(args, config):
     return 0
 
 
-def _served_nodes(db, max_age=90):
-    """the nodes the serve service is talking to right now.
+# While a node is connected its last_seen is refreshed every 30 seconds
+# (server.py LAST_SEEN_INTERVAL); older than a few of those means nobody is
+# serving it, whatever its online flag says.
+SERVED_MAX_AGE = 90
+
+
+def is_served(node, now=None):
+    """whether the serve service is talking to this node right now.
 
     The online flag alone can lie: a serve process that dies never marks its
-    nodes offline. While a node is connected its last_seen is refreshed every
-    30 seconds (server.py LAST_SEEN_INTERVAL), so anything older than a couple
-    of those is not actually being served.
+    nodes offline, so it is only believed while last_seen is fresh.
     """
+    now = time.time() if now is None else now
+    return bool(node["online"] and node["last_seen"]
+                and now - node["last_seen"] < SERVED_MAX_AGE)
+
+
+def served_nodes(db):
     now = time.time()
-    return [n for n in db.nodes()
-            if n["online"] and n["last_seen"] and now - n["last_seen"] < max_age]
+    return [n for n in db.nodes() if is_served(n, now)]
 
 
 class CommandError(Exception):
@@ -181,6 +191,11 @@ def cmd_decide(args, config):
             return 1
         decision.selected = matched[0]
     if args.name is not None:
+        if decision.name_is_taken(args.name):
+            print("opensnitch-cli: a rule named '%s' already exists on this node and would "
+                  "be replaced. Pick another name, or delete it first with "
+                  "'opensnitch-cli rule delete %s'" % (args.name, args.name), file=sys.stderr)
+            return 1
         decision.name = args.name
 
     error = decision.validate()
@@ -301,16 +316,24 @@ def cmd_rule(args, config):
 def cmd_nodes(args, config):
     db = open_db(config)
     nodes = db.nodes()
+    now = time.time()
     if args.json:
-        print(json.dumps([dict(n) for n in nodes], indent=2))
+        out = []
+        for n in nodes:
+            row = dict(n)
+            row["online"] = is_served(n, now)
+            out.append(row)
+        print(json.dumps(out, indent=2))
         return 0
     if len(nodes) == 0:
         print("no node has connected yet")
         return 0
-    print("%-28s %-20s %-8s %s" % ("ADDRESS", "HOSTNAME", "ONLINE", "LAST SEEN"))
+    print("%-24s %-18s %-9s %-7s %s" % ("ADDRESS", "HOSTNAME", "DAEMON", "ONLINE", "LAST SEEN"))
     for node in nodes:
-        print("%-28s %-20s %-8s %s" % (node["addr"], node["hostname"] or "?",
-                                       "yes" if node["online"] else "no", node["last_seen"]))
+        print("%-24s %-18s %-9s %-7s %s" % (node["addr"], node["hostname"] or "?",
+                                            node["version"] or "?",
+                                            "yes" if is_served(node, now) else "no",
+                                            durations.format_time(node["last_seen"])))
     return 0
 
 
@@ -324,7 +347,7 @@ def cmd_status(args, config):
               "the review queue" % db.clear_errors())
 
     nodes = db.nodes()
-    online = len([n for n in nodes if n["online"]])
+    online = len(served_nodes(db))
     errors = db.outbox_errors()
     queued = db.queued_count()
 

@@ -70,6 +70,30 @@ class TestPeerAddress:
         assert service.peer_addr("ipv6:[fe80::1%eth0]:1") == "ipv6:[fe80::1%eth0]"
 
 
+class TestVersionWarning:
+    """an old daemon does not reject what we send, it misreads it."""
+
+    def test_a_daemon_from_before_the_renumbering_is_flagged(self):
+        from opensnitch.cli.service import version_warning
+        assert "older than 1.6.0" in version_warning("1.5.8")
+        assert "older than 1.6.0" in version_warning("1.5.8.1")
+
+    def test_a_different_but_compatible_version_is_only_mentioned(self):
+        from opensnitch.cli.service import version_warning
+        warning = version_warning("1.6.5")
+        assert warning is not None
+        assert "older than" not in warning
+
+    def test_the_same_version_says_nothing(self):
+        from opensnitch.cli.service import version_warning
+        from opensnitch.version import version
+        assert version_warning(version) is None
+
+    def test_garbage_says_nothing(self):
+        from opensnitch.cli.service import version_warning
+        assert version_warning("") is None
+        assert version_warning("git-abc123") is None
+
 
 class TestSubscribe:
 

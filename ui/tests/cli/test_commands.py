@@ -1,8 +1,9 @@
 #
 # pytest -v cli/test_commands.py
 #
-# The commands of opensnitch-cli that act on the database without a daemon,
-# driven the way main() drives them: through the parser and the cmd_* function.
+# The commands of opensnitch-cli that act on the database without a daemon:
+# rule delete/enable/disable, nodes, status. Each is driven the way main()
+# drives it, through the parser and the cmd_* function.
 #
 
 import json
@@ -117,3 +118,53 @@ class TestRule:
         assert run(["rule", "delete", "r"], config) == 1
         assert "no node has connected" in capsys.readouterr().err
 
+
+class TestNodes:
+
+    def test_online_means_heard_from_recently(self, db, config, capsys):
+        """a serve process that dies never marks its nodes offline, so the flag
+        alone is not believed."""
+        db.node_seen("unix:/local", "fresh", "1.9.0", online=True)
+        db.node_seen("ipv4:10.0.0.2", "stale", "1.9.0", online=True)
+        db._db.execute("UPDATE nodes SET last_seen=? WHERE addr='ipv4:10.0.0.2'",
+                       (int(time.time()) - 600,))
+
+        assert run(["nodes", "--json"], config) == 0
+        rows = {n["addr"]: n for n in json.loads(capsys.readouterr().out)}
+        assert rows["unix:/local"]["online"] is True
+        assert rows["ipv4:10.0.0.2"]["online"] is False
+
+    def test_the_daemon_version_is_shown(self, db, config, capsys):
+        db.node_seen("unix:/local", "h", "1.9.0")
+        assert run(["nodes"], config) == 0
+        out = capsys.readouterr().out
+        assert "DAEMON" in out
+        assert "1.9.0" in out
+        assert "1786" not in out, "last seen should be a date, not an epoch"
+
+
+class TestStatus:
+
+    def test_nodes_online_agrees_with_nodes(self, db, config, capsys):
+        db.node_seen("unix:/local", "stale", "1.9.0", online=True)
+        db._db.execute("UPDATE nodes SET last_seen=?", (int(time.time()) - 600,))
+
+        assert run(["status", "--json"], config) == 0
+        status = json.loads(capsys.readouterr().out)
+        assert status["nodes"] == 1
+        assert status["nodes_online"] == 0
+
+
+class TestDecideName:
+
+    def test_a_name_in_use_is_refused(self, db, config, connection, capsys):
+        """the daemon replaces rules by name without a word."""
+        db.node_seen("unix:/local", "h", "1.9.0")
+        db.replace_rules("unix:/local", [a_rule("mine")])
+        entry_id, _ = db.record_pending("unix:/local", "sig", connection, {})
+
+        assert run(["allow", str(entry_id), "--name", "mine"], config) == 1
+        assert "already exists" in capsys.readouterr().err
+        assert db.get_pending(entry_id)["state"] == dbmod.STATE_PENDING
+
+        assert run(["allow", str(entry_id), "--name", "mine-2"], config) == 0

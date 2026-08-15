@@ -306,6 +306,24 @@ class TestEditing:
         assert applied == 0
         assert db.pending_count() == 1
 
+    def test_a_typed_name_that_exists_is_refused(self, db, config, connection):
+        """the daemon would replace the existing rule without a word."""
+        taken = ui_pb2.Rule(name="mine", enabled=True, action="allow", duration="always")
+        taken.operator.type = "simple"
+        taken.operator.operand = "process.path"
+        taken.operator.data = "/usr/bin/wget"
+        db.replace_rules("unix:/local", [taken])
+        queue_one(db, connection)
+
+        told = []
+        # e -> name -> "mine" (refused) -> name -> "mine-2" -> apply
+        answers = ["e", "4", "mine", "4", "mine-2", "a"]
+        review.review_loop(db, db.pending(), config, read=scripted(answers), write=told.append)
+
+        names = [rule["name"] for t, rule in sent_rules(db) if t == ui_pb2.CHANGE_RULE]
+        assert names == ["mine-2"]
+        assert any("already exists" in line for line in told)
+
     def test_no_duplicate_when_the_match_becomes_a_condition(self, db, config, connection):
         """add a condition, then switch the match to that same candidate.
 
