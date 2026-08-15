@@ -281,7 +281,8 @@ because the daemon lowercases it and it would never match.
 | `allow ID [--match OPERAND] [--duration D] [--name N]` | approve without prompting |
 | `deny ID` / `reject ID` | refuse without prompting |
 | `drop ID` | remove from the queue without creating a rule |
-| `rules [--node N] [--json]` | rules the daemon reported when it connected |
+| `rules [--node N] [--json]` | the rules each daemon has |
+| `rule delete\|enable\|disable NAME [--node N]` | change a rule the daemon has |
 | `nodes [--json]` | daemons that have connected |
 | `status [--json] [--retry\|--clear]` | queue depth, nodes, and rules the daemon rejected |
 
@@ -295,6 +296,29 @@ again differently.
 ```bash
 sudo opensnitch-cli allow 3 --match dest.host --duration always
 ```
+
+## Managing the rules a daemon has
+
+`rules` lists them, and `rule` changes them:
+
+```bash
+sudo opensnitch-cli rules
+sudo opensnitch-cli rule disable allow-always-simple-usr-bin-curl
+sudo opensnitch-cli rule enable allow-always-simple-usr-bin-curl
+sudo opensnitch-cli rule delete allow-always-simple-usr-bin-curl
+```
+
+Like a decision from `review`, these go through the outbox: `serve` sends them
+within a second, or as soon as the daemon is back. Deleting an `always` rule
+removes its file from `/etc/opensnitchd/rules`; deleting a temporary one takes
+it out of the daemon's memory, which is the only way to get rid of an
+`until restart` rule short of restarting the daemon.
+
+The list starts as what the daemon reported when it connected and is kept in
+step with every change the daemon confirms, so it stays accurate while `serve`
+runs. It does not see rules that expire on the daemon on their own, or that
+were edited on disk by hand, until the daemon reconnects. With more than one
+node, `--node` says which daemon is meant; with one, it is implied.
 
 ## Configuration
 
@@ -366,6 +390,8 @@ from `/etc/opensnitchd/default-config.json`.
   not stored; the review queue is fed by the connections the daemon actually asks
   about.
 * No firewall (nftables) configuration.
+* No rules editor beyond `rule delete|enable|disable`: to change what a rule
+  matches, delete it and approve a new one from the queue.
 * Multiple nodes are recorded and can be filtered with `--node`, but there is no
   per-node management beyond that.
 * It never blocks waiting for a person, by design.

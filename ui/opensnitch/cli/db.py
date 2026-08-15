@@ -34,7 +34,7 @@ import sqlite3
 import threading
 import time
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATE_PENDING = "pending"
 STATE_DECIDED = "decided"
@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS rules (
     op_operand TEXT,
     op_data TEXT,
     updated INTEGER,
+    rule_json TEXT,
     PRIMARY KEY(node, name)
 );
 
@@ -158,12 +159,16 @@ class Database:
             self._db.executescript(SCHEMA)
 
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
-            if version == 0:
-                self._db.execute("PRAGMA user_version={0}".format(SCHEMA_VERSION))
-            elif version > SCHEMA_VERSION:
+            if version > SCHEMA_VERSION:
                 raise RuntimeError(
                     "{0} was created by a newer version of opensnitch-cli "
                     "(schema {1} > {2})".format(self.path, version, SCHEMA_VERSION))
+            if version == 1:
+                # schema 2 keeps the whole rule the daemon reported, so that
+                # 'rule enable/disable' can send it back complete
+                self._db.execute("ALTER TABLE rules ADD COLUMN rule_json TEXT")
+            if version != SCHEMA_VERSION:
+                self._db.execute("PRAGMA user_version={0}".format(SCHEMA_VERSION))
 
     def close(self):
         with self._lock:
@@ -330,6 +335,8 @@ class Database:
             self._db.execute(
                 "UPDATE outbox SET state=?, last_error=?, updated=? WHERE ntf_id=? AND state=?",
                 (OUT_DONE if ok else OUT_ERROR, error, int(time.time()), ntf_id, OUT_SENT))
+            if ok:
+                self.reflect_result(ntf_id)
 
     def requeue_sent(self, node=None):
         """puts unanswered notifications back in the queue.
@@ -401,14 +408,53 @@ class Database:
     # the daemon's rules, as reported on Subscribe
 
     def replace_rules(self, node, rules):
+        """the rule set a node reported on Subscribe, whole."""
+        from google.protobuf import json_format
+
         with self._lock:
             self._db.execute("DELETE FROM rules WHERE node=?", (node,))
-            now = int(time.time())
-            self._db.executemany(
-                "INSERT OR REPLACE INTO rules (node, name, enabled, action, duration, "
-                "op_type, op_operand, op_data, updated) VALUES (?,?,?,?,?,?,?,?,?)",
-                [(node, r.name, 1 if r.enabled else 0, r.action, r.duration,
-                  r.operator.type, r.operator.operand, r.operator.data, now) for r in rules])
+            for r in rules:
+                self._upsert_rule(node, r, json_format.MessageToJson(r))
+
+    def _upsert_rule(self, node, r, rule_json):
+        self._db.execute(
+            "INSERT OR REPLACE INTO rules (node, name, enabled, action, duration, "
+            "op_type, op_operand, op_data, updated, rule_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (node, r.name, 1 if r.enabled else 0, r.action, r.duration,
+             r.operator.type, r.operator.operand, r.operator.data, int(time.time()),
+             rule_json))
+
+    def reflect_result(self, ntf_id):
+        """keeps the rules table in step with a change the daemon confirmed.
+
+        The daemon only lists its rules when it connects; after that, what we
+        successfully sent it is the best knowledge we have.
+        """
+        from google.protobuf import json_format
+        from opensnitch.cli.proto import ui_pb2
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT node, ntf_type, rule_json FROM outbox WHERE ntf_id=? AND state=?",
+                (ntf_id, OUT_DONE)).fetchone()
+            if row is None:
+                return
+            rule = ui_pb2.Rule()
+            try:
+                json_format.Parse(row["rule_json"], rule)
+            except json_format.ParseError:
+                return
+            if row["ntf_type"] == ui_pb2.DELETE_RULE:
+                self._db.execute("DELETE FROM rules WHERE node=? AND name=?",
+                                 (row["node"], rule.name))
+            elif row["ntf_type"] in (ui_pb2.CHANGE_RULE, ui_pb2.ENABLE_RULE,
+                                     ui_pb2.DISABLE_RULE):
+                self._upsert_rule(row["node"], rule, row["rule_json"])
+
+    def get_rule(self, node, name):
+        with self._lock:
+            return self._db.execute("SELECT * FROM rules WHERE node=? AND name=?",
+                                    (node, name)).fetchone()
 
     def rules(self, node=None):
         query = "SELECT * FROM rules"

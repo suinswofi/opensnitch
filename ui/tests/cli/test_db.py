@@ -2,6 +2,8 @@
 # pytest -v cli/test_db.py
 #
 
+import json
+
 from opensnitch.cli import db as dbmod
 
 
@@ -131,6 +133,77 @@ class TestOutbox:
         assert "allow-always-list-usr-bin-curl" in db.rule_names("n")
         assert "allow-always-list-usr-bin-curl" not in db.rule_names("other")
 
+
+def a_rule(name, enabled=True):
+    from opensnitch.cli.proto import ui_pb2
+
+    rule = ui_pb2.Rule(name=name, enabled=enabled, action="allow", duration="always")
+    rule.operator.type = "simple"
+    rule.operator.operand = "process.path"
+    rule.operator.data = "/usr/bin/curl"
+    return rule
+
+
+class TestRules:
+
+    def test_the_whole_rule_is_kept(self, db):
+        db.replace_rules("n", [a_rule("r")])
+        row = db.get_rule("n", "r")
+        assert row["op_data"] == "/usr/bin/curl"
+        assert json.loads(row["rule_json"])["operator"]["data"] == "/usr/bin/curl"
+
+    def test_a_confirmed_change_updates_the_list(self, db):
+        """the daemon only reports its rules on connecting; what it confirmed
+        since is the best knowledge there is."""
+        from google.protobuf import json_format
+        from opensnitch.cli.proto import ui_pb2
+
+        db.replace_rules("n", [a_rule("r")])
+        outbox_id = db.queue_notification(
+            "n", ui_pb2.CHANGE_RULE, json_format.MessageToJson(a_rule("r", enabled=False)))
+        db.mark_sent(outbox_id, 700)
+        db.mark_result(700, True)
+        assert db.get_rule("n", "r")["enabled"] == 0
+
+        outbox_id = db.queue_notification(
+            "n", ui_pb2.DELETE_RULE, json_format.MessageToJson(a_rule("r")))
+        db.mark_sent(outbox_id, 701)
+        db.mark_result(701, True)
+        assert db.get_rule("n", "r") is None
+
+    def test_a_rejected_change_leaves_the_list_alone(self, db):
+        from google.protobuf import json_format
+        from opensnitch.cli.proto import ui_pb2
+
+        db.replace_rules("n", [a_rule("r")])
+        outbox_id = db.queue_notification(
+            "n", ui_pb2.CHANGE_RULE, json_format.MessageToJson(a_rule("r", enabled=False)))
+        db.mark_sent(outbox_id, 702)
+        db.mark_result(702, False, "no")
+        assert db.get_rule("n", "r")["enabled"] == 1
+
+
+class TestSchema:
+
+    def test_a_schema_1_database_is_upgraded(self, tmp_path):
+        """the rules table gained a column; a queue from before must still open."""
+        import sqlite3
+
+        path = str(tmp_path / "old.db")
+        old = sqlite3.connect(path)
+        old.executescript(dbmod.SCHEMA.replace("    rule_json TEXT,\n", ""))
+        old.execute("INSERT INTO rules (node, name, enabled) VALUES ('n', 'r', 1)")
+        old.execute("PRAGMA user_version=1")
+        old.commit()
+        old.close()
+
+        db = dbmod.Database(path)
+        try:
+            row = db.get_rule("n", "r")
+            assert row["rule_json"] is None
+            assert db._db.execute("PRAGMA user_version").fetchone()[0] == dbmod.SCHEMA_VERSION
+        finally:
+            db.close()
 
 
 class TestConcurrentAccess:

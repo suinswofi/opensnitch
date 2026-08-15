@@ -133,6 +133,30 @@ def _served_nodes(db, max_age=90):
             if n["online"] and n["last_seen"] and now - n["last_seen"] < max_age]
 
 
+class CommandError(Exception):
+    """a command cannot do what was asked; the message is for the user."""
+
+
+def resolve_node(db, requested):
+    """the node a rule command applies to.
+
+    With one node known there is nothing to choose; with several, --node has
+    to say which, because a rule name only means something on one daemon.
+    """
+    known = [n["addr"] for n in db.nodes()]
+    if requested is not None:
+        if requested not in known:
+            raise CommandError("no node called '%s' has connected. Known: %s" % (
+                requested, ", ".join(known) or "none"))
+        return requested
+    if len(known) == 1:
+        return known[0]
+    if len(known) == 0:
+        raise CommandError("no node has connected yet, so there is no daemon to send this to")
+    raise CommandError("several nodes have connected, say which with --node: %s" %
+                       ", ".join(known))
+
+
 def cmd_decide(args, config):
     """allow / deny / reject without the interactive loop."""
     from opensnitch.cli import review
@@ -181,20 +205,96 @@ def cmd_drop(args, config):
     return 0
 
 
+def _rule_match_summary(row):
+    """one short column describing what a stored rule matches on."""
+    if row["op_type"] == RuleConsts.RULE_TYPE_LIST and row["rule_json"]:
+        try:
+            ops = json.loads(row["rule_json"]).get("operator", {}).get("list", [])
+        except ValueError:
+            ops = []
+        return " and ".join("%s %s" % (o.get("operand"), o.get("data")) for o in ops) or "list"
+    return "%s %s %s" % (row["op_operand"], "is" if row["op_type"] == "simple" else
+                         row["op_type"], row["op_data"])
+
+
 def cmd_rules(args, config):
     db = open_db(config)
     entries = db.rules(node=args.node)
     if args.json:
-        print(json.dumps([dict(e) for e in entries], indent=2))
+        out = []
+        for e in entries:
+            row = dict(e)
+            try:
+                row["rule"] = json.loads(row.pop("rule_json") or "null")
+            except ValueError:
+                row["rule"] = None
+            out.append(row)
+        print(json.dumps(out, indent=2))
         return 0
     if len(entries) == 0:
         print("no rules known. They are read from each node when it connects.")
         return 0
-    print("%-8s %-40s %-8s %s" % ("ENABLED", "NAME", "ACTION", "DURATION"))
+    print("%-8s %-44s %-7s %-14s %s" % ("ENABLED", "NAME", "ACTION", "DURATION", "MATCH"))
     for rule in entries:
-        print("%-8s %-40s %-8s %s" % (
-            "yes" if rule["enabled"] else "no", rule["name"][:40], rule["action"],
-            rule["duration"]))
+        print("%-8s %-44s %-7s %-14s %s" % (
+            "yes" if rule["enabled"] else "no", rule["name"][:44], rule["action"],
+            rule["duration"], _rule_match_summary(rule)))
+    return 0
+
+
+def cmd_rule(args, config):
+    """delete / enable / disable a rule on the daemon, by name."""
+    from google.protobuf import json_format
+    from opensnitch.cli.proto import ui_pb2
+    from opensnitch.cli import rules
+
+    db = open_db(config)
+    try:
+        node = resolve_node(db, args.node)
+    except CommandError as e:
+        print("opensnitch-cli: %s" % e, file=sys.stderr)
+        return 1
+
+    row = db.get_rule(node, args.name)
+
+    if args.verb == "delete":
+        # the daemon only reads the name, but refuses a rule with no operator
+        rule = ui_pb2.Rule(name=args.name)
+        rule.operator.type = RuleConsts.RULE_TYPE_SIMPLE
+        rule.operator.operand = "true"
+        if row is None:
+            print("note: '%s' is not among the rules this node reported; deleting a rule "
+                  "the daemon does not have does nothing" % args.name, file=sys.stderr)
+        db.queue_notification(node, ui_pb2.DELETE_RULE, json_format.MessageToJson(rule))
+        print("queued: delete rule '%s' on %s" % (args.name, node))
+        return 0
+
+    # enable / disable send the whole rule back, because the daemon replaces
+    # what it has with what it receives (daemon/ui/notifications.go
+    # handleActionEnableRule): a name alone would leave it with an empty rule.
+    if row is None:
+        print("opensnitch-cli: no rule called '%s' is known on %s. 'opensnitch-cli rules' "
+              "lists them" % (args.name, node), file=sys.stderr)
+        return 1
+    if not row["rule_json"]:
+        print("opensnitch-cli: the whole of '%s' is not known yet, only its name; it will "
+              "be once the daemon reconnects" % args.name, file=sys.stderr)
+        return 1
+
+    rule = ui_pb2.Rule()
+    json_format.Parse(row["rule_json"], rule)
+    enable = args.verb == "enable"
+    if bool(rule.enabled) == enable:
+        print("rule '%s' is already %sd" % (args.name, args.verb))
+        return 0
+    rule.enabled = enable
+    error = rules.validate_rule(rule)
+    if error is not None:
+        print("opensnitch-cli: the daemon would refuse this rule: %s" % error, file=sys.stderr)
+        return 1
+    db.queue_notification(node, ui_pb2.ENABLE_RULE if enable else ui_pb2.DISABLE_RULE,
+                          json_format.MessageToJson(rule))
+    print("queued: %s rule '%s' on %s" % (args.verb, args.name, node))
     return 0
 
 
@@ -290,10 +390,16 @@ def build_parser():
     drop.add_argument("id", type=int)
     drop.set_defaults(func=cmd_drop)
 
-    rules_cmd = subparsers.add_parser("rules", help="rules the daemon reported on connecting")
+    rules_cmd = subparsers.add_parser("rules", help="the rules each daemon has")
     rules_cmd.add_argument("--node")
     rules_cmd.add_argument("--json", action="store_true")
     rules_cmd.set_defaults(func=cmd_rules)
+
+    rule_cmd = subparsers.add_parser("rule", help="delete, enable or disable a rule by name")
+    rule_cmd.add_argument("verb", choices=("delete", "enable", "disable"))
+    rule_cmd.add_argument("name")
+    rule_cmd.add_argument("--node", help="which daemon, when more than one has connected")
+    rule_cmd.set_defaults(func=cmd_rule)
 
     nodes = subparsers.add_parser("nodes", help="daemons that have connected")
     nodes.add_argument("--json", action="store_true")
